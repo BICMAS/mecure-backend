@@ -21,8 +21,11 @@ enum UserRole {
 
 enum Department {
   HR
-  ENGINEERING
   SALES
+  FIELD_SALES_REF
+  FIELD_TEAM_MANAGER
+  MEDICAL_REP
+  MEDICAL_REP_PHARMACIST
   MARKETING
   FINANCE
   OPERATIONS
@@ -85,7 +88,7 @@ enum LearnerModuleProgressStatus {
 model User {
   id                          String                  @id @default(cuid()) @db.VarChar(25)
   username                    String?                 @unique
-  email                       String                  @unique
+  email                       String?                 @unique
   fullName                    String
   password                    String                  @db.VarChar(255)
   timezone                    String                  @default("UTC")

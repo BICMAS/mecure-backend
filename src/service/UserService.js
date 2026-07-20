@@ -2,6 +2,13 @@ import { UserModel } from '../models/UserModel.js';
 import { OrganizationModel } from '../models/OrganizationModel.js';
 import bcrypt from 'bcryptjs';
 
+/** Trim and treat blank strings as null. */
+const normalizeOptionalContact = (value) => {
+    if (value == null) return null;
+    const trimmed = String(value).trim();
+    return trimmed.length > 0 ? trimmed : null;
+};
+
 export class UserService {
     static sanitizeUser(user) {
         if (!user) return user;
@@ -64,9 +71,16 @@ export class UserService {
     }
 
     static async createUser(data, creator) {
-        const { fullName, email, phoneNumber, department, userRole, groupId, password, username } = data;  // Include username in destructuring
-        if (!fullName || !email || !userRole || !department || !password) {
-            throw new Error('Required fields: fullName, email, userRole, department, password');
+        const { fullName, department, userRole, groupId, password, username } = data;
+        const email = normalizeOptionalContact(data.email);
+        const phoneNumber = normalizeOptionalContact(data.phoneNumber);
+
+        if (!fullName || !userRole || !department || !password) {
+            throw new Error('Required fields: fullName, userRole, department, password');
+        }
+
+        if (!email && !phoneNumber) {
+            throw new Error('Either email or phone number is required');
         }
 
         let orgId = null;
@@ -86,16 +100,22 @@ export class UserService {
             throw new Error('Insufficient role to create users');
         }
 
-        // FIXED: Check email only for duplicates (DB handles username unique)
-        const existing = await UserModel.findByEmail(email);
-        if (existing) throw new Error('Email already exists');
+        if (email) {
+            const existingEmail = await UserModel.findByEmail(email);
+            if (existingEmail) throw new Error('Email already exists');
+        }
+
+        if (phoneNumber) {
+            const existingPhone = await UserModel.findByPhone(phoneNumber);
+            if (existingPhone) throw new Error('Phone number already exists');
+        }
 
         const hashedPassword = await bcrypt.hash(password, 12);
         const user = await UserModel.create({
             fullName,
             email,
-            username,  // Include if provided (DB enforces unique)
-            phoneNumber: phoneNumber || null,
+            username,
+            phoneNumber,
             department,
             userRole,
             password: hashedPassword,
@@ -158,13 +178,42 @@ export class UserService {
         const data = {};
         for (const key of allowedFields) {
             if (Object.prototype.hasOwnProperty.call(updates, key)) {
-                data[key] = updates[key];
+                if (key === 'email' || key === 'phoneNumber') {
+                    data[key] = normalizeOptionalContact(updates[key]);
+                } else {
+                    data[key] = updates[key];
+                }
             }
         }
 
         if (Object.prototype.hasOwnProperty.call(updates, 'password')) {
             if (!updates.password) throw new Error('Password cannot be empty');
             data.password = await bcrypt.hash(updates.password, 12);
+        }
+
+        const nextEmail = Object.prototype.hasOwnProperty.call(data, 'email')
+            ? data.email
+            : existing.email;
+        const nextPhone = Object.prototype.hasOwnProperty.call(data, 'phoneNumber')
+            ? data.phoneNumber
+            : existing.phoneNumber;
+
+        if (!nextEmail && !nextPhone) {
+            throw new Error('Either email or phone number is required');
+        }
+
+        if (data.email && data.email !== existing.email) {
+            const existingEmail = await UserModel.findByEmail(data.email);
+            if (existingEmail && existingEmail.id !== id) {
+                throw new Error('Email already exists');
+            }
+        }
+
+        if (data.phoneNumber && data.phoneNumber !== existing.phoneNumber) {
+            const existingPhone = await UserModel.findByPhone(data.phoneNumber);
+            if (existingPhone && existingPhone.id !== id) {
+                throw new Error('Phone number already exists');
+            }
         }
 
         const updated = await UserModel.update(id, data);
@@ -216,25 +265,37 @@ export class UserService {
 
         for (const [index, row] of rows.entries()) {
             const fullName = row.fullName || row.full_name || row.name;
-            const email = row.email;
+            const email = normalizeOptionalContact(row.email);
             const password = row.password || row.temporaryPassword;
             const department = row.department;
             const userRole = row.userRole || row.user_role || 'LEARNER';
             const username = row.username || null;
-            const phoneNumber = row.phoneNumber || row.phone_number || null;
+            const phoneNumber = normalizeOptionalContact(
+                row.phoneNumber || row.phone_number
+            );
 
-            if (!fullName || !email || !password || !department) {
-                throw new Error(`Row ${index + 1}: fullName, email, password, and department are required`);
+            if (!fullName || !password || !department) {
+                throw new Error(`Row ${index + 1}: fullName, password, and department are required`);
+            }
+
+            if (!email && !phoneNumber) {
+                throw new Error(`Row ${index + 1}: either email or phone number is required`);
             }
 
             if (creator.userRole === 'HR_MANAGER' && userRole !== 'LEARNER') {
                 throw new Error(`Row ${index + 1}: HR can only create learners`);
             }
 
-            const existing = await UserModel.findByEmail(email);
-            if (existing) {
-                continue;
+            let skip = false;
+            if (email) {
+                const existingEmail = await UserModel.findByEmail(email);
+                if (existingEmail) skip = true;
             }
+            if (!skip && phoneNumber) {
+                const existingPhone = await UserModel.findByPhone(phoneNumber);
+                if (existingPhone) skip = true;
+            }
+            if (skip) continue;
 
             usersToCreate.push({
                 fullName,
