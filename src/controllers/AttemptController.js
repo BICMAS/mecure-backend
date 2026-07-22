@@ -43,3 +43,19 @@ export const retakeCourse = async (req, res) => {
         });
     }
 };
+
+export const practiceRetakeCourse = async (req, res) => {
+    try {
+        const { courseId } = req.params;
+        const result = await AttemptService.practiceRetakeCourse(courseId, req.user);
+        res.json({
+            success: true,
+            data: result,
+        });
+    } catch (error) {
+        res.status(400).json({
+            success: false,
+            error: error.message,
+        });
+    }
+};

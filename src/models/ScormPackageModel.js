@@ -151,6 +151,8 @@ export class ScormPackageModel {
         const getOrCreateCourseAttempt = async () => {
             if (!options.courseId) return null;
 
+            const preserveOfficial = Boolean(options.preserveOfficialAttempt);
+
             return prisma.attempt.upsert({
                 where: {
                     userId_courseId: {
@@ -158,11 +160,16 @@ export class ScormPackageModel {
                         courseId: options.courseId
                     }
                 },
-                update: {
-                    scormPackageId: packageId,
-                    status: 'IN_PROGRESS',
-                    updatedAt: new Date()
-                },
+                update: preserveOfficial
+                    ? {
+                        scormPackageId: packageId,
+                        updatedAt: new Date(),
+                    }
+                    : {
+                        scormPackageId: packageId,
+                        status: 'IN_PROGRESS',
+                        updatedAt: new Date()
+                    },
                 create: {
                     userId,
                     courseId: options.courseId,
@@ -172,7 +179,7 @@ export class ScormPackageModel {
                     createdAt: new Date(),
                     updatedAt: new Date()
                 },
-                select: { id: true }
+                select: { id: true, status: true }
             });
         };
 
@@ -203,11 +210,17 @@ export class ScormPackageModel {
 
         try {
             if (options.forceNewRegistration) {
-                console.log('[LAUNCH RETAKE] Creating fresh registration for package:', packageId);
+                const preserveOfficial = Boolean(options.preserveOfficialAttempt);
+                console.log(
+                    preserveOfficial
+                        ? '[LAUNCH PRACTICE] Creating fresh registration for package:'
+                        : '[LAUNCH RETAKE] Creating fresh registration for package:',
+                    packageId,
+                );
                 await createFreshRegistrationAndLaunch();
 
                 const courseAttempt = await getOrCreateCourseAttempt();
-                if (courseAttempt?.id) {
+                if (courseAttempt?.id && !preserveOfficial) {
                     await prisma.attempt.update({
                         where: { id: courseAttempt.id },
                         data: {

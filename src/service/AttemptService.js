@@ -200,6 +200,52 @@ export class AttemptService {
         };
     }
 
+    /**
+     * Practice retake after a successful pass.
+     * Fresh SCORM registration(s) only — does not reset official course attempt,
+     * certificate, or HR completion status.
+     */
+    static async practiceRetakeCourse(courseId, user) {
+        if (user.userRole !== 'LEARNER') throw new Error('Only learners can retake courses');
+
+        const assignment = await AssignmentModel.findByCourseAndLearner(courseId, user.id);
+        if (!assignment) throw new Error('Course not assigned to learner');
+
+        const completionState = await getAssignmentCompletionState(user.id, courseId);
+        if (!(completionState.complete && completionState.passed)) {
+            throw new Error('Practice retake is only available after the course is passed');
+        }
+
+        const packageIds = await getCourseScormPackageIds(courseId);
+        if (!packageIds.length) {
+            throw new Error('No SCORM content configured for this course');
+        }
+
+        const launches = [];
+        for (const packageId of packageIds) {
+            const launch = await ScormPackageModel.getLaunchUrl(
+                packageId,
+                user.id,
+                user.fullName || user.email || 'Learner',
+                {
+                    courseId,
+                    forceNewRegistration: true,
+                    preserveOfficialAttempt: true,
+                },
+            );
+            launches.push(launch);
+        }
+
+        const primary = launches[0];
+        return {
+            launchUrl: primary?.launchUrl,
+            scormAttemptId: primary?.scormAttemptId,
+            passingScore: completionState.passingScore,
+            packageLaunches: launches,
+            practice: true,
+        };
+    }
+
     static async ensureCourseAttemptLink(userId, scormPackageId, packageAttemptId) {
         const lesson = await prisma.lesson.findFirst({
             where: { scormPackageId },
@@ -278,17 +324,30 @@ export class AttemptService {
             requireQuizPass: passingConfig.requireQuizPass,
         });
 
+        const alreadyOfficiallyPassed =
+            previousStatus === 'COMPLETED' || previousStatus === 'PASSED';
+
+        // Practice SCORM sessions must not wipe official completion / canonical score.
+        if (alreadyOfficiallyPassed && !outcome.passed) {
+            return;
+        }
+
         await prisma.attempt.update({
             where: { id: courseAttemptId },
-            data: {
-                completionPercentage: outcome.progress,
-                status: outcome.status,
-                score: rolledUpScore,
-                updatedAt: new Date(),
-            },
+            data: alreadyOfficiallyPassed
+                ? {
+                    // Keep official status; optionally refresh activity timestamp only.
+                    updatedAt: new Date(),
+                }
+                : {
+                    completionPercentage: outcome.progress,
+                    status: outcome.status,
+                    score: rolledUpScore,
+                    updatedAt: new Date(),
+                },
         });
 
-        if (courseAttempt.courseId && outcome.passed) {
+        if (courseAttempt.courseId && outcome.passed && !alreadyOfficiallyPassed) {
             await EconomyService.onCourseCompleted(
                 courseAttempt.userId,
                 courseAttempt.courseId,
