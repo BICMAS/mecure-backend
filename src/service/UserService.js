@@ -9,6 +9,8 @@ const normalizeOptionalContact = (value) => {
     return trimmed.length > 0 ? trimmed : null;
 };
 
+const normalizeOptionalText = normalizeOptionalContact;
+
 export class UserService {
     static sanitizeUser(user) {
         if (!user) return user;
@@ -74,6 +76,7 @@ export class UserService {
         const { fullName, department, userRole, groupId, password, username } = data;
         const email = normalizeOptionalContact(data.email);
         const phoneNumber = normalizeOptionalContact(data.phoneNumber);
+        const designation = normalizeOptionalText(data.designation);
 
         if (!fullName || !userRole || !department || !password) {
             throw new Error('Required fields: fullName, userRole, department, password');
@@ -117,6 +120,7 @@ export class UserService {
             username,
             phoneNumber,
             department,
+            designation,
             userRole,
             password: hashedPassword,
             orgId,
@@ -155,6 +159,7 @@ export class UserService {
                 'email',
                 'phoneNumber',
                 'department',
+                'designation',
                 'username',
                 'groupId',
                 'status',
@@ -166,6 +171,7 @@ export class UserService {
                 'email',
                 'phoneNumber',
                 'department',
+                'designation',
                 'userRole',
                 'username',
                 'orgId',
@@ -178,8 +184,8 @@ export class UserService {
         const data = {};
         for (const key of allowedFields) {
             if (Object.prototype.hasOwnProperty.call(updates, key)) {
-                if (key === 'email' || key === 'phoneNumber') {
-                    data[key] = normalizeOptionalContact(updates[key]);
+                if (key === 'email' || key === 'phoneNumber' || key === 'designation') {
+                    data[key] = normalizeOptionalText(updates[key]);
                 } else {
                     data[key] = updates[key];
                 }
@@ -273,6 +279,9 @@ export class UserService {
             const phoneNumber = normalizeOptionalContact(
                 row.phoneNumber || row.phone_number
             );
+            const designation = normalizeOptionalText(
+                row.designation || row.job_title || row.title
+            );
 
             if (!fullName || !password || !department) {
                 throw new Error(`Row ${index + 1}: fullName, password, and department are required`);
@@ -303,6 +312,7 @@ export class UserService {
                 username,
                 phoneNumber,
                 department,
+                designation,
                 userRole,
                 password: await bcrypt.hash(password, 12),
                 orgId: creator.userRole === 'HR_MANAGER' ? creator.orgId : (row.orgId || null),

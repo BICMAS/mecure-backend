@@ -36,6 +36,7 @@ export class UserModel {
                 status: true,
                 orgId: true,
                 department: true,
+                designation: true,
                 phoneNumber: true,
                 metadata: true,
             }
@@ -82,7 +83,7 @@ export class UserModel {
         console.log(`[MODEL] Finding learners by orgId: ${orgId}`);
         return prisma.user.findMany({
             where: { orgId, userRole: 'LEARNER' },
-            select: { id: true, fullName: true, email: true, userRole: true, status: true, orgId: true, department: true }
+            select: { id: true, fullName: true, email: true, userRole: true, status: true, orgId: true, department: true, designation: true }
         });
     }
 

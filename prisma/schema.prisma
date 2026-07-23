@@ -22,10 +22,6 @@ enum UserRole {
 enum Department {
   HR
   SALES
-  FIELD_SALES_REF
-  FIELD_TEAM_MANAGER
-  MEDICAL_REP
-  MEDICAL_REP_PHARMACIST
   MARKETING
   FINANCE
   OPERATIONS
@@ -96,6 +92,7 @@ model User {
   authProvider                AuthProvider            @default(LOCAL)
   userRole                    UserRole                @default(LEARNER)
   department                  Department?
+  designation                 String?
   phoneNumber                 String?                 @unique
   metadata                    Json?
   createdAt                   DateTime                @default(now())
