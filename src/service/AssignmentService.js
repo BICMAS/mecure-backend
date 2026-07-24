@@ -2,6 +2,7 @@ import { AssignmentModel } from '../models/AssignmentModel.js';
 import { CourseModel } from '../models/CourseModel.js';
 import { UserModel } from '../models/UserModel.js';
 import { getAssignmentCompletionState } from '../lib/courseCompletion.js';
+import { resolveAssignmentCourseImage } from '../lib/courseImage.js';
 
 export class AssignmentService {
     static async createAssignments(data, assigner) {
@@ -74,7 +75,7 @@ export class AssignmentService {
             }
 
             enriched.push({
-                ...assignment,
+                ...(await resolveAssignmentCourseImage(assignment)),
                 progress: Math.min(100, Math.max(0, progress)),
                 status: completionState.status,
                 passingScore: completionState.passingScore,

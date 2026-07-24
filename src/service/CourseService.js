@@ -1,15 +1,7 @@
 import { CourseModel } from '../models/CourseModel.js';
 import { ModuleModel } from '../models/ModuleModel.js';
-import { StorageService } from '../services/StorageService.js';
+import { resolveCourseImageUrl } from '../lib/courseImage.js';
 import { linkModulesToManifestActivities } from '../lib/modulePacing.js';
-
-async function withResolvedImageUrl(course) {
-    if (!course?.imageUrl) return course;
-    return {
-        ...course,
-        imageUrl: await StorageService.resolveStorageUrl(course.imageUrl),
-    };
-}
 
 export class CourseService {
     static async createDraft(data, creatorId) {
@@ -138,13 +130,13 @@ export class CourseService {
 
     static async getCourses() {
         const courses = await CourseModel.findMany();
-        return Promise.all(courses.map(withResolvedImageUrl));
+        return Promise.all(courses.map(resolveCourseImageUrl));
     }
 
     static async getCourseById(id) {
         const course = await CourseModel.findById(id);
         if (!course) throw new Error('Course not found');
-        return withResolvedImageUrl(course);
+        return resolveCourseImageUrl(course);
     }
 
     static async deleteCourse(id, requester) {

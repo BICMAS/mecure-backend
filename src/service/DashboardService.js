@@ -4,6 +4,10 @@ import { AttemptModel } from '../models/AttemptModel.js';
 import { ScoreService } from './ScoreService.js';
 import { prisma } from '../utils/db.js';
 import { computeScorePercent } from '../utils/scormScore.js';
+import {
+    resolveAssignmentCourseImage,
+    resolveCourseImageUrl,
+} from '../lib/courseImage.js';
 
 export class DashboardService {
     static async getHRDashboard(orgId) {
@@ -83,6 +87,18 @@ export class LearnerDashboardService {
             DashboardModel.getUnfinishedCourses(user.id)
         ]);
 
+        const resolvedUnfinishedCourses = await Promise.all(
+            unfinishedCourses.map(resolveAssignmentCourseImage),
+        );
+
+        let resolvedCurrentCourse = currentCourse;
+        if (currentCourse?.course) {
+            resolvedCurrentCourse = {
+                ...currentCourse,
+                course: await resolveCourseImageUrl(currentCourse.course),
+            };
+        }
+
         return {
             streak,
             points,
@@ -91,8 +107,8 @@ export class LearnerDashboardService {
             averageScore: Math.round(averageScore * 100) / 100,
             learningPaths,
             learningActivity,
-            currentCourse,
-            unfinishedCourses
+            currentCourse: resolvedCurrentCourse,
+            unfinishedCourses: resolvedUnfinishedCourses,
         };
     }
 }
