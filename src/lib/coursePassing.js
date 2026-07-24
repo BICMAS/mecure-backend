@@ -18,6 +18,27 @@ export function scoreFromAttemptFields(score, scormCloudScoreScaled) {
     return computeScorePercent(score, scormCloudScoreScaled);
 }
 
+/** Official pass requires 100% tracked content completion — not SCORM status flags alone. */
+export function isFullContentComplete(completionPercentage) {
+    return Math.min(100, Math.max(0, Number(completionPercentage) || 0)) >= 100;
+}
+
+export function logCompletionDecision(source, context, input, outcome) {
+    console.log('[COMPLETION]', JSON.stringify({
+        source,
+        userId: context?.userId ?? null,
+        courseId: context?.courseId ?? null,
+        scormAttemptId: context?.scormAttemptId ?? null,
+        completionPct: input?.completionPercentage ?? null,
+        scorePct: input?.scorePercent ?? outcome?.scorePercent ?? null,
+        scormStatus: input?.scormStatus ?? null,
+        requireQuizPass: input?.requireQuizPass ?? null,
+        decision: outcome?.passed ? 'ACCEPTED' : 'REJECTED',
+        resultStatus: outcome?.status ?? null,
+        requiresRetake: outcome?.requiresRetake ?? false,
+    }));
+}
+
 export function evaluateScormOutcome({
     completionPercentage = 0,
     scorePercent = null,
@@ -28,9 +49,21 @@ export function evaluateScormOutcome({
     const completion = Math.min(100, Math.max(0, Number(completionPercentage) || 0));
     const cutoff = resolvePassingScore({ passingScore });
     const normalizedStatus = String(scormStatus || 'IN_PROGRESS').toUpperCase();
+    const contentComplete = isFullContentComplete(completion);
+
+    if (normalizedStatus === 'FAILED') {
+        return {
+            status: 'FAILED',
+            passed: false,
+            progress: completion,
+            scorePercent,
+            passingScore: cutoff,
+            requiresRetake: true,
+        };
+    }
 
     if (!requireQuizPass) {
-        if (completion >= 100 || normalizedStatus === 'COMPLETED' || normalizedStatus === 'PASSED') {
+        if (contentComplete) {
             return {
                 status: 'COMPLETED',
                 passed: true,
@@ -51,21 +84,8 @@ export function evaluateScormOutcome({
         };
     }
 
-    if (normalizedStatus === 'FAILED') {
-        return {
-            status: 'FAILED',
-            passed: false,
-            progress: completion,
-            scorePercent,
-            passingScore: cutoff,
-            requiresRetake: true,
-        };
-    }
-
-    const contentComplete = completion >= 100 || normalizedStatus === 'COMPLETED';
-
-    if (contentComplete || normalizedStatus === 'PASSED') {
-        if (scorePercent == null) {
+    if (contentComplete) {
+        if (scorePercent == null && normalizedStatus !== 'PASSED') {
             return {
                 status: 'IN_PROGRESS',
                 passed: false,
@@ -76,7 +96,10 @@ export function evaluateScormOutcome({
             };
         }
 
-        if (scorePercent >= cutoff || normalizedStatus === 'PASSED') {
+        if (
+            (scorePercent != null && scorePercent >= cutoff)
+            || normalizedStatus === 'PASSED'
+        ) {
             return {
                 status: 'COMPLETED',
                 passed: true,
@@ -187,13 +210,26 @@ export function evaluateRollUpOutcome({
     rolledUpScore,
     passingScore,
     requireQuizPass,
+    allPackagesPassed = false,
 }) {
     const completion = Math.min(100, Math.max(0, Number(avgCompletion) || 0));
 
+    if (!allPackagesPassed) {
+        const anyProgress = completion > 0;
+        return {
+            status: anyProgress ? 'IN_PROGRESS' : 'NOT_STARTED',
+            passed: false,
+            progress: completion,
+            scorePercent: rolledUpScore,
+            passingScore: resolvePassingScore({ passingScore }),
+            requiresRetake: false,
+        };
+    }
+
     return evaluateScormOutcome({
-        completionPercentage: completion,
+        completionPercentage: 100,
         scorePercent: rolledUpScore,
-        scormStatus: completion >= 100 ? 'COMPLETED' : 'IN_PROGRESS',
+        scormStatus: 'COMPLETED',
         passingScore,
         requireQuizPass,
     });

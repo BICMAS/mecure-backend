@@ -39,12 +39,15 @@ export function normalizeScormRegistration(registration = {}) {
     const completionPercentage = Math.round(completionAmount * 100);
 
     let status = 'IN_PROGRESS';
-    if (registration.registrationCompletion === 'COMPLETED') {
-        status = 'COMPLETED';
+    if (registration.success === 'FAILED') {
+        status = 'FAILED';
     } else if (registration.success === 'PASSED') {
         status = 'PASSED';
-    } else if (registration.success === 'FAILED') {
-        status = 'FAILED';
+    } else if (
+        registration.registrationCompletion === 'COMPLETED'
+        && completionPercentage >= 100
+    ) {
+        status = 'COMPLETED';
     }
 
     const passed = registration.success === 'PASSED' || scorePercent === 100;
@@ -73,15 +76,18 @@ export function normalizeCallbackPayload(body = {}, fallbackCompletion = 0) {
     const scoreMin = body.score_min != null ? parseFloat(body.score_min) : 0;
     const scorePercent = computeScorePercent(parsedScore, null, scoreMax, scoreMin);
 
-    let completionPercentage = fallbackCompletion ?? 0;
+    let completionPercentage = Math.min(
+        100,
+        Math.max(0, Math.round(Number(fallbackCompletion) || 0)),
+    );
     if (body.completion_amount != null && body.completion_amount !== '') {
-        completionPercentage = Math.round(parseFloat(body.completion_amount) * 100);
-    } else {
-        const completionStatus = body.completion_status?.toLowerCase();
-        if (completionStatus === 'completed' || completionStatus === 'passed') {
-            completionPercentage = 100;
-        }
+        completionPercentage = Math.min(
+            100,
+            Math.max(0, Math.round(parseFloat(body.completion_amount) * 100)),
+        );
     }
+    // Do not infer 100% from completion_status alone — exit callbacks often send
+    // "completed" without a reliable completion_amount.
 
     const mappedStatus = mapScormStatus(body.completion_status || body.success_status);
     const passed = body.success_status?.toLowerCase() === 'passed' || scorePercent === 100;

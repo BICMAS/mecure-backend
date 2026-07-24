@@ -5,9 +5,11 @@ import { isProductionEnv } from '../config/env.js';
 import { EconomyService } from '../service/EconomyService.js';
 import { AttemptService } from '../service/AttemptService.js';
 import { normalizeCallbackPayload } from '../utils/scormScore.js';
+import { repairStaleCourseAttemptIfNeeded } from '../lib/courseCompletion.js';
 import {
     evaluateScormOutcome,
     getCoursePassingConfigByScormPackageId,
+    logCompletionDecision,
 } from '../lib/coursePassing.js';
 
 const scormCallbackRouter = express.Router();
@@ -81,6 +83,7 @@ scormCallbackRouter.post('/', express.urlencoded({ extended: true }), async (req
         );
 
         const passingConfig = await getCoursePassingConfigByScormPackageId(scormPackage.id);
+        const learnerId = existingScormAttempt.userId;
         const outcome = evaluateScormOutcome({
             completionPercentage: normalized.completionPercentage,
             scorePercent: normalized.scorePercent,
@@ -89,17 +92,33 @@ scormCallbackRouter.post('/', express.urlencoded({ extended: true }), async (req
             requireQuizPass: passingConfig.requireQuizPass,
         });
 
-        const learnerId = existingScormAttempt.userId;
-        const previousScormStatus = existingScormAttempt.status;
-        let courseAttemptId = existingScormAttempt.attemptId || null;
+        logCompletionDecision('scormCallback', {
+            userId: learnerId,
+            courseId: passingConfig.courseId,
+            scormAttemptId: existingScormAttempt.id,
+        }, {
+            completionPercentage: normalized.completionPercentage,
+            scorePercent: normalized.scorePercent,
+            scormStatus: normalized.status,
+            requireQuizPass: passingConfig.requireQuizPass,
+        }, outcome);
+
+        const persistedStatus = outcome.passed
+            ? outcome.status
+            : normalized.completionPercentage > 0
+                ? 'IN_PROGRESS'
+                : outcome.status;
 
         const attemptData = {
-            status: outcome.status,
+            status: persistedStatus,
             completionPercentage: normalized.completionPercentage,
             score: normalized.scoreRaw,
             learningHours: normalized.learningHours,
             updatedAt: new Date(),
         };
+
+        const previousScormStatus = existingScormAttempt.status;
+        let courseAttemptId = existingScormAttempt.attemptId || null;
 
         if (!courseAttemptId) {
             const packageAttempt = await prisma.attempt.upsert({
@@ -129,7 +148,7 @@ scormCallbackRouter.post('/', express.urlencoded({ extended: true }), async (req
             where: { id: existingScormAttempt.id },
             data: {
                 attemptId: courseAttemptId,
-                status: outcome.status,
+                status: persistedStatus,
                 completionPercentage: normalized.completionPercentage,
                 score: normalized.scoreRaw,
                 learningHours: normalized.learningHours,
@@ -160,9 +179,18 @@ scormCallbackRouter.post('/', express.urlencoded({ extended: true }), async (req
                 courseAttemptId,
             );
             await AttemptService.rollUpCourseCompletion(courseAttemptId);
+
+            if (passingConfig.courseId) {
+                await repairStaleCourseAttemptIfNeeded(learnerId, passingConfig.courseId);
+            }
         }
 
-        console.log('[SCORM CALLBACK] Updated attempt for learner:', learnerId);
+        console.log('[SCORM CALLBACK] Updated attempt for learner:', learnerId, {
+            decision: outcome.passed ? 'ACCEPTED' : 'REJECTED',
+            completionPct: normalized.completionPercentage,
+            scorePct: normalized.scorePercent,
+            status: persistedStatus,
+        });
         res.status(200).send('OK');
     } catch (error) {
         console.error('[SCORM CALLBACK ERROR]', error);

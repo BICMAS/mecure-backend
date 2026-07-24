@@ -61,7 +61,7 @@ export class AssignmentService {
             );
 
             let progress = completionState.progress;
-            if (courseAttempts.length > 0) {
+            if (courseAttempts.length > 0 && completionState.complete) {
                 const latestAttempt = courseAttempts.reduce((latest, current) => {
                     return (!latest || new Date(current.createdAt) > new Date(latest.createdAt))
                         ? current

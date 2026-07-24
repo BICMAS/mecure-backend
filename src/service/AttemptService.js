@@ -11,8 +11,10 @@ import {
     evaluateRollUpOutcome,
     getCoursePassingConfigByScormPackageId,
     getCoursePassingConfigByCourseId,
+    logCompletionDecision,
+    scoreFromAttemptFields,
 } from '../lib/coursePassing.js';
-import { getCourseScormPackageIds, getAssignmentCompletionState } from '../lib/courseCompletion.js';
+import { getCourseScormPackageIds, getAssignmentCompletionState, repairStaleCourseAttemptIfNeeded } from '../lib/courseCompletion.js';
 import { syncLearnerModuleProgressFromRegistration } from '../lib/modulePacing.js';
 
 function buildSyncResponse(scormAttempt, outcome) {
@@ -36,14 +38,48 @@ export class AttemptService {
         const existing = await AttemptModel.findByUserAndCourse(user.id, courseId);
         const previousStatus = existing?.status ?? 'NOT_STARTED';
 
-        const attempt = await AttemptModel.upsert(user.id, courseId, data);
+        const outcome = evaluateScormOutcome({
+            completionPercentage: data.completionPercentage,
+            scorePercent: scoreFromAttemptFields(
+                existing?.score,
+                existing?.scormCloudScoreScaled,
+            ),
+            scormStatus: data.status ?? existing?.status ?? 'IN_PROGRESS',
+            passingScore: passingConfig.passingScore,
+            requireQuizPass: passingConfig.requireQuizPass,
+        });
+
+        logCompletionDecision('updateProgress', {
+            userId: user.id,
+            courseId,
+        }, {
+            completionPercentage: data.completionPercentage,
+            scorePercent: outcome.scorePercent,
+            scormStatus: data.status ?? existing?.status,
+            requireQuizPass: passingConfig.requireQuizPass,
+        }, outcome);
+
+        const safeData = {
+            ...data,
+            completionPercentage: outcome.passed ? 100 : Math.round(data.completionPercentage),
+            status: outcome.passed
+                ? outcome.status
+                : data.completionPercentage > 0
+                    ? 'IN_PROGRESS'
+                    : 'NOT_STARTED',
+        };
+
+        const attempt = await AttemptModel.upsert(user.id, courseId, safeData);
 
         const enrolments = await LearningPathEnrolmentModel.findByUserAndCourse(user.id, courseId);
         for (const enrolment of enrolments) {
-            await LearningPathEnrolmentModel.updateProgress(enrolment.id, data.completionPercentage);
+            await LearningPathEnrolmentModel.updateProgress(
+                enrolment.id,
+                safeData.completionPercentage,
+            );
         }
 
-        const newStatus = attempt.status ?? data.status ?? previousStatus;
+        const newStatus = attempt.status ?? safeData.status ?? previousStatus;
         if (newStatus === 'COMPLETED' || newStatus === 'PASSED') {
             await EconomyService.onCourseCompleted(user.id, courseId, previousStatus, newStatus);
         }
@@ -91,8 +127,25 @@ export class AttemptService {
             requireQuizPass: passingConfig.requireQuizPass,
         });
 
+        logCompletionDecision('syncScormProgress', {
+            userId: scormAttempt.userId,
+            courseId: passingConfig.courseId,
+            scormAttemptId,
+        }, {
+            completionPercentage: normalized.completionPercentage,
+            scorePercent: normalized.scorePercent,
+            scormStatus: normalized.status,
+            requireQuizPass: passingConfig.requireQuizPass,
+        }, outcome);
+
+        const persistedStatus = outcome.passed
+            ? outcome.status
+            : normalized.completionPercentage > 0
+                ? 'IN_PROGRESS'
+                : outcome.status;
+
         const updateData = {
-            status: outcome.status,
+            status: persistedStatus,
             completionPercentage: normalized.completionPercentage,
             score: normalized.scoreRaw,
             learningHours: normalized.learningHours,
@@ -136,6 +189,10 @@ export class AttemptService {
                     registrationId,
                     passingConfig,
                 });
+            }
+
+            if (passingConfig.courseId) {
+                await repairStaleCourseAttemptIfNeeded(updated.userId, passingConfig.courseId);
             }
         }
 
@@ -213,7 +270,9 @@ export class AttemptService {
 
         const completionState = await getAssignmentCompletionState(user.id, courseId);
         if (!(completionState.complete && completionState.passed)) {
-            throw new Error('Practice retake is only available after the course is passed');
+            throw new Error(
+                'This course is not officially completed yet. Open the course with Start Course instead of Practice.',
+            );
         }
 
         const packageIds = await getCourseScormPackageIds(courseId);
@@ -297,21 +356,53 @@ export class AttemptService {
             include: { scormAttempts: true },
         });
 
-        if (!courseAttempt) return;
+        if (!courseAttempt?.courseId) return;
 
-        const passingConfig = courseAttempt.courseId
-            ? await getCoursePassingConfigByCourseId(courseAttempt.courseId)
-            : { passingScore: 70, requireQuizPass: true };
-
+        const passingConfig = await getCoursePassingConfigByCourseId(courseAttempt.courseId);
         const previousStatus = courseAttempt.status;
-        const packageAttempts = courseAttempt.scormAttempts;
+        const packageIds = await getCourseScormPackageIds(courseAttempt.courseId);
 
-        const avgCompletion = packageAttempts.length > 0
-            ? packageAttempts.reduce((sum, p) => sum + (p.completionPercentage || 0), 0) / packageAttempts.length
+        if (packageIds.length === 0) return;
+
+        const packageAttempts = courseAttempt.scormAttempts.filter((item) =>
+            packageIds.includes(item.scormPackageId),
+        );
+
+        const packageOutcomes = packageIds.map((packageId) => {
+            const attempt = packageAttempts.find((item) => item.scormPackageId === packageId);
+            if (!attempt) {
+                return {
+                    packageId,
+                    passed: false,
+                    progress: 0,
+                    status: 'NOT_STARTED',
+                };
+            }
+
+            const outcome = evaluateScormOutcome({
+                completionPercentage: attempt.completionPercentage ?? 0,
+                scorePercent: computeScorePercent(attempt.score, attempt.scormCloudScoreScaled),
+                scormStatus: attempt.status,
+                passingScore: passingConfig.passingScore,
+                requireQuizPass: passingConfig.requireQuizPass,
+            });
+
+            return {
+                packageId,
+                passed: outcome.passed,
+                progress: outcome.progress,
+                status: outcome.status,
+                scorePercent: outcome.scorePercent,
+            };
+        });
+
+        const allPackagesPassed = packageOutcomes.every((item) => item.passed);
+        const avgCompletion = packageOutcomes.length > 0
+            ? packageOutcomes.reduce((sum, item) => sum + item.progress, 0) / packageOutcomes.length
             : 0;
 
-        const scorePercents = packageAttempts
-            .map((item) => computeScorePercent(item.score, item.scormCloudScoreScaled))
+        const scorePercents = packageOutcomes
+            .map((item) => item.scorePercent)
             .filter((value) => value != null);
         const rolledUpScore = scorePercents.length > 0
             ? Math.round(scorePercents.reduce((sum, value) => sum + value, 0) / scorePercents.length)
@@ -322,7 +413,18 @@ export class AttemptService {
             rolledUpScore,
             passingScore: passingConfig.passingScore,
             requireQuizPass: passingConfig.requireQuizPass,
+            allPackagesPassed,
         });
+
+        logCompletionDecision('rollUpCourseCompletion', {
+            userId: courseAttempt.userId,
+            courseId: courseAttempt.courseId,
+        }, {
+            completionPercentage: avgCompletion,
+            scorePercent: rolledUpScore,
+            scormStatus: outcome.status,
+            requireQuizPass: passingConfig.requireQuizPass,
+        }, outcome);
 
         const alreadyOfficiallyPassed =
             previousStatus === 'COMPLETED' || previousStatus === 'PASSED';
@@ -336,7 +438,6 @@ export class AttemptService {
             where: { id: courseAttemptId },
             data: alreadyOfficiallyPassed
                 ? {
-                    // Keep official status; optionally refresh activity timestamp only.
                     updatedAt: new Date(),
                 }
                 : {
