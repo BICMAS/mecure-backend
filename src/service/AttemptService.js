@@ -205,6 +205,8 @@ export class AttemptService {
         const assignment = await AssignmentModel.findByCourseAndLearner(courseId, user.id);
         if (!assignment) throw new Error('Course not assigned to learner');
 
+        await repairStaleCourseAttemptIfNeeded(user.id, courseId);
+
         const completionState = await getAssignmentCompletionState(user.id, courseId);
         if (completionState.complete && completionState.passed) {
             throw new Error('Course already passed');
@@ -261,6 +263,10 @@ export class AttemptService {
      * Practice retake after a successful pass.
      * Fresh SCORM registration(s) only — does not reset official course attempt,
      * certificate, or HR completion status.
+     *
+     * If the course is not officially passed (e.g. stale UI opened ?practice=1),
+     * falls back to a normal resume/retake launch so mobile clients without an
+     * APK update can still enter the course.
      */
     static async practiceRetakeCourse(courseId, user) {
         if (user.userRole !== 'LEARNER') throw new Error('Only learners can retake courses');
@@ -268,11 +274,29 @@ export class AttemptService {
         const assignment = await AssignmentModel.findByCourseAndLearner(courseId, user.id);
         if (!assignment) throw new Error('Course not assigned to learner');
 
+        await repairStaleCourseAttemptIfNeeded(user.id, courseId);
+
         const completionState = await getAssignmentCompletionState(user.id, courseId);
         if (!(completionState.complete && completionState.passed)) {
-            throw new Error(
-                'This course is not officially completed yet. Open the course with Start Course instead of Practice.',
-            );
+            console.log('[PRACTICE RETAKE] Not officially passed — falling back to normal launch', {
+                userId: user.id,
+                courseId,
+                status: completionState.status,
+                requiresRetake: completionState.requiresRetake,
+            });
+
+            if (completionState.requiresRetake) {
+                const retake = await AttemptService.retakeCourse(courseId, user);
+                return {
+                    ...retake,
+                    practice: false,
+                    fallback: 'retake',
+                };
+            }
+
+            return AttemptService.launchCourseSession(courseId, user, {
+                fallback: 'resume',
+            });
         }
 
         const packageIds = await getCourseScormPackageIds(courseId);
@@ -302,6 +326,38 @@ export class AttemptService {
             passingScore: completionState.passingScore,
             packageLaunches: launches,
             practice: true,
+        };
+    }
+
+    static async launchCourseSession(courseId, user, options = {}) {
+        const assignment = await AssignmentModel.findByCourseAndLearner(courseId, user.id);
+        if (!assignment) throw new Error('Course not assigned to learner');
+
+        await repairStaleCourseAttemptIfNeeded(user.id, courseId);
+
+        const completionState = await getAssignmentCompletionState(user.id, courseId);
+        const packageIds = await getCourseScormPackageIds(courseId);
+        if (!packageIds.length) {
+            throw new Error('No SCORM content configured for this course');
+        }
+
+        const primaryPackageId = packageIds[0];
+        const launch = await ScormPackageModel.getLaunchUrl(
+            primaryPackageId,
+            user.id,
+            user.fullName || user.email || 'Learner',
+            {
+                courseId,
+                forceNewRegistration: false,
+            },
+        );
+
+        return {
+            launchUrl: launch?.launchUrl,
+            scormAttemptId: launch?.scormAttemptId,
+            passingScore: completionState.passingScore,
+            practice: false,
+            fallback: options.fallback ?? null,
         };
     }
 
