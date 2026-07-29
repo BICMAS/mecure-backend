@@ -7,8 +7,8 @@ export class ScormService {
     /**
      * Upload SCORM package (via SCORM Cloud)
      */
-    static async uploadPackage(tempPath, filename, uploadedBy) {
-        console.log('[SCORM SERVICE] Uploading package via SCORM Cloud...');
+    static async uploadPackage(tempPath, filename, uploadedBy, options = {}) {
+        console.log('[SCORM SERVICE] Uploading package via SCORM Cloud...', options);
 
         // Validate file
         if (!fs.existsSync(tempPath)) {
@@ -27,7 +27,7 @@ export class ScormService {
         }
 
         // Upload via model (which uses SCORM Cloud)
-        const result = await ScormPackageModel.uploadAndExtract(tempPath, filename, uploadedBy);
+        const result = await ScormPackageModel.uploadAndExtract(tempPath, filename, uploadedBy, options);
 
         return result;
     }

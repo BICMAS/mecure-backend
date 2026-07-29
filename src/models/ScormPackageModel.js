@@ -21,6 +21,7 @@ import {
     assertModuleUnlocked,
     resolveStartScoForModule,
 } from '../lib/modulePacing.js';
+import { shouldRefreshRegistrationForPackageVersion } from '../lib/scormRegistrationRefresh.js';
 
 export class ScormPackageModel {
     static getErrorMessage(error, fallback = 'SCORM launch failed') {
@@ -32,13 +33,20 @@ export class ScormPackageModel {
         return `${fallback}${status ? ` (status ${status})` : ''}: ${detail || error.message || 'Unknown launch error'}`;
     }
 
-    static async uploadAndExtract(filePath, filename, uploadedBy, lessonId = null) {
-        console.log('[MODEL] Uploading to SCORM Cloud', { filename, lessonId });
+    static async uploadAndExtract(filePath, filename, uploadedBy, options = {}) {
+        const {
+            lessonId = null,
+            courseId: lmsCourseId = null,
+            existingPackageId = null,
+        } = options;
 
-        // 1. Submit the file to SCORM Cloud's import queue. This streams the file
-        //    and returns as soon as the job is accepted — it does NOT block for the
-        //    (potentially ~30 min) import. The generated courseId is also the
-        //    scormCloudId, so we already have everything we need to launch later.
+        console.log('[MODEL] Uploading to SCORM Cloud', {
+            filename,
+            lessonId,
+            lmsCourseId,
+            existingPackageId,
+        });
+
         const packageSize = fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
 
         let manifestData = { activities: [] };
@@ -49,43 +57,77 @@ export class ScormPackageModel {
             console.warn('[MODEL] Manifest parse skipped:', parseErr.message);
         }
 
-        const { jobId, courseId } = await ScormCloudService.submitCourseUpload(filePath, filename, lessonId);
+        let existingPackage = null;
+        if (existingPackageId) {
+            existingPackage = await prisma.scormPackage.findUnique({
+                where: { id: existingPackageId },
+            });
+        }
 
-        // 2. Persist the package immediately and respond fast so Railway's proxy
-        //    never times out (which is what produced the 502 / CORS errors).
-        const pkg = await prisma.scormPackage.create({
-            data: {
-                filename,
-                storagePath: `scormcloud://${courseId}`,
-                manifestJson: {
-                    activities: manifestData.activities ?? [],
-                    organizationId: manifestData.organizationId ?? null,
-                    schemaVersion: manifestData.schemaVersion ?? null,
+        const uploadOptions = {
+            lessonId,
+            courseId: lmsCourseId,
+            scormCloudCourseId: existingPackage?.scormCloudId ?? null,
+        };
+
+        const { jobId, courseId: scormCloudCourseId } = await ScormCloudService.submitCourseUpload(
+            filePath,
+            filename,
+            uploadOptions,
+        );
+
+        const manifestJson = {
+            activities: manifestData.activities ?? [],
+            organizationId: manifestData.organizationId ?? null,
+            schemaVersion: manifestData.schemaVersion ?? null,
+        };
+
+        let pkg;
+        if (existingPackage) {
+            pkg = await prisma.scormPackage.update({
+                where: { id: existingPackage.id },
+                data: {
+                    filename,
+                    storagePath: `scormcloud://${scormCloudCourseId}`,
+                    manifestJson,
+                    checksum: `cloud-${Date.now()}`,
+                    packageSize,
+                    scormCloudId: scormCloudCourseId,
+                    uploadedAt: new Date(),
                 },
-                scormVersion: 'V2004', // sensible default; corrected once import finishes
-                encrypted: false,
-                checksum: `cloud-${Date.now()}`,
-                launchFile: null,
-                uploadedBy,
-                uploadedAt: new Date(),
-                blobs: [],
-                fileCount: 0,
-                packageSize,
-                scormCloudId: courseId,
-            },
-            include: { uploader: { select: { id: true, fullName: true, email: true } } },
-        });
+                include: { uploader: { select: { id: true, fullName: true, email: true } } },
+            });
+            console.log(`[MODEL] Updated existing SCORM package ${existingPackage.id} (version upload)`);
+        } else {
+            pkg = await prisma.scormPackage.create({
+                data: {
+                    filename,
+                    storagePath: `scormcloud://${scormCloudCourseId}`,
+                    manifestJson,
+                    scormVersion: 'V2004',
+                    encrypted: false,
+                    checksum: `cloud-${Date.now()}`,
+                    launchFile: null,
+                    uploadedBy,
+                    uploadedAt: new Date(),
+                    blobs: [],
+                    fileCount: 0,
+                    packageSize,
+                    scormCloudId: scormCloudCourseId,
+                },
+                include: { uploader: { select: { id: true, fullName: true, email: true } } },
+            });
+        }
 
-        // 3. SCORM Cloud now owns the file; remove the local temp copy.
         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
 
-        // 4. Confirm the import in the background: fix the SCORM version on success,
-        //    or remove the orphaned record on failure so admins can retry.
-        void this.finalizeImportInBackground(jobId, courseId, filename, pkg.id);
+        void this.finalizeImportInBackground(jobId, scormCloudCourseId, filename, pkg.id, {
+            isNewRecord: !existingPackage,
+        });
 
         return {
             ...pkg,
-            scormCloudCourseId: courseId,
+            scormCloudCourseId,
             status: 'PROCESSING',
         };
     }
@@ -96,22 +138,40 @@ export class ScormPackageModel {
      * fast. Updates the stored SCORM version on success and deletes the package
      * record if the import ultimately fails.
      */
-    static async finalizeImportInBackground(jobId, courseId, filename, packageId) {
+    static async finalizeImportInBackground(jobId, courseId, filename, packageId, options = {}) {
+        const { isNewRecord = true } = options;
         try {
             const result = await ScormCloudService.waitForImportJob(jobId, courseId, filename);
 
-            const scormVersion = (result.scormVersion?.includes('2004') || result.scormVersion?.includes('4th'))
-                ? 'V2004'
-                : 'V1_2';
+            const scormVersion = result.scormVersion === 'V1_2' || result.scormVersion === 'V2004'
+                ? result.scormVersion
+                : ScormCloudService.mapCourseToScormVersion(result);
 
             await prisma.scormPackage.update({
                 where: { id: packageId },
                 data: { scormVersion },
             });
 
+            try {
+                const { refreshScormPackageManifest } = await import('../lib/scormManifestRefresh.js');
+                const pkg = await prisma.scormPackage.findUnique({ where: { id: packageId } });
+                if (pkg) {
+                    await refreshScormPackageManifest(pkg);
+                }
+            } catch (refreshErr) {
+                console.warn('[SCORM IMPORT FINALIZE] Manifest refresh skipped:', refreshErr.message);
+            }
+
             console.log(`[SCORM IMPORT FINALIZE] Course ${courseId} ready (${result.title})`);
         } catch (err) {
             console.error(`[SCORM IMPORT FINALIZE] Import failed for course ${courseId}:`, err.message);
+
+            if (!isNewRecord) {
+                console.warn(
+                    `[SCORM IMPORT FINALIZE] Keeping existing package ${packageId} after failed version upload`,
+                );
+                return;
+            }
 
             try {
                 await prisma.scormPackage.delete({ where: { id: packageId } });
@@ -148,10 +208,12 @@ export class ScormPackageModel {
 
         const launchOptions = startSco ? { startSco } : {};
 
-        const getOrCreateCourseAttempt = async () => {
+        const getOrCreateCourseAttempt = async (preserveOfficialAttempt = false) => {
             if (!options.courseId) return null;
 
-            const preserveOfficial = Boolean(options.preserveOfficialAttempt);
+            const preserveOfficial = Boolean(
+                preserveOfficialAttempt || options.preserveOfficialAttempt,
+            );
 
             return prisma.attempt.upsert({
                 where: {
@@ -189,11 +251,25 @@ export class ScormPackageModel {
                 userId,
                 scormPackageId: packageId
             },
-            select: { id: true, scormCloudRegistrationId: true, attemptId: true }
+            select: {
+                id: true,
+                scormCloudRegistrationId: true,
+                attemptId: true,
+                createdAt: true,
+            }
         });
 
         let registrationId = scormAttempt?.scormCloudRegistrationId;
         let launchUrl;
+
+        const needsVersionRefresh = scormAttempt
+            ? await shouldRefreshRegistrationForPackageVersion(
+                pkg,
+                scormAttempt,
+                userId,
+                options,
+            )
+            : false;
 
         const createFreshRegistrationAndLaunch = async () => {
             const result = await ScormCloudService.createLaunchLink(
@@ -209,17 +285,21 @@ export class ScormPackageModel {
         };
 
         try {
-            if (options.forceNewRegistration) {
-                const preserveOfficial = Boolean(options.preserveOfficialAttempt);
+            if (options.forceNewRegistration || needsVersionRefresh) {
+                const preserveOfficial = Boolean(
+                    options.preserveOfficialAttempt || needsVersionRefresh,
+                );
                 console.log(
-                    preserveOfficial
-                        ? '[LAUNCH PRACTICE] Creating fresh registration for package:'
-                        : '[LAUNCH RETAKE] Creating fresh registration for package:',
+                    needsVersionRefresh
+                        ? '[LAUNCH VERSION REFRESH] New SCORM package version — creating fresh registration for package:'
+                        : preserveOfficial
+                            ? '[LAUNCH PRACTICE] Creating fresh registration for package:'
+                            : '[LAUNCH RETAKE] Creating fresh registration for package:',
                     packageId,
                 );
                 await createFreshRegistrationAndLaunch();
 
-                const courseAttempt = await getOrCreateCourseAttempt();
+                const courseAttempt = await getOrCreateCourseAttempt(preserveOfficial);
                 if (courseAttempt?.id && !preserveOfficial) {
                     await prisma.attempt.update({
                         where: { id: courseAttempt.id },
@@ -233,19 +313,25 @@ export class ScormPackageModel {
                 }
 
                 if (scormAttempt) {
+                    const scormAttemptUpdate = {
+                        scormCloudRegistrationId: registrationId,
+                        attemptId: courseAttempt?.id || scormAttempt.attemptId,
+                        status: 'IN_PROGRESS',
+                        completionPercentage: 0,
+                        score: null,
+                        scormCloudCompletion: null,
+                        scormCloudScoreScaled: null,
+                        learningHours: null,
+                        updatedAt: new Date(),
+                    };
+
+                    if (needsVersionRefresh) {
+                        scormAttemptUpdate.createdAt = new Date();
+                    }
+
                     await prisma.scormAttempt.update({
                         where: { id: scormAttempt.id },
-                        data: {
-                            scormCloudRegistrationId: registrationId,
-                            attemptId: courseAttempt?.id || scormAttempt.attemptId,
-                            status: 'IN_PROGRESS',
-                            completionPercentage: 0,
-                            score: null,
-                            scormCloudCompletion: null,
-                            scormCloudScoreScaled: null,
-                            learningHours: null,
-                            updatedAt: new Date(),
-                        },
+                        data: scormAttemptUpdate,
                     });
                 } else {
                     scormAttempt = await prisma.scormAttempt.create({

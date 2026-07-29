@@ -33,17 +33,7 @@ function collectLeafItems(item, items = []) {
     return items;
 }
 
-export async function parseManifestActivitiesFromZip(filePath) {
-    const zip = new AdmZip(filePath);
-    const manifestEntry = zip
-        .getEntries()
-        .find((entry) => entry.entryName.toLowerCase().endsWith('imsmanifest.xml'));
-
-    if (!manifestEntry) {
-        throw new Error('SCORM manifest (imsmanifest.xml) not found in package');
-    }
-
-    const manifestXml = manifestEntry.getData().toString('utf8');
+export async function parseManifestActivitiesFromXml(manifestXml) {
     const manifestJson = await parseStringPromise(manifestXml, {
         explicitArray: false,
         mergeAttrs: true,
@@ -90,4 +80,18 @@ export async function parseManifestActivitiesFromZip(filePath) {
         schemaVersion: String(schemaVersion),
         organizationId: organization.identifier ?? null,
     };
+}
+
+export async function parseManifestActivitiesFromZip(filePath) {
+    const zip = new AdmZip(filePath);
+    const manifestEntry = zip
+        .getEntries()
+        .find((entry) => entry.entryName.toLowerCase().endsWith('imsmanifest.xml'));
+
+    if (!manifestEntry) {
+        throw new Error('SCORM manifest (imsmanifest.xml) not found in package');
+    }
+
+    const manifestXml = manifestEntry.getData().toString('utf8');
+    return parseManifestActivitiesFromXml(manifestXml);
 }

@@ -23,10 +23,17 @@ export const uploadPackage = async (req, res) => {
 
     try {
         const uploadedBy = req.user.id;
+        const options = {
+            lessonId: req.body?.lessonId || null,
+            courseId: req.body?.courseId || null,
+            existingPackageId: req.body?.existingPackageId || null,
+        };
+
         const result = await ScormService.uploadPackage(
             req.file.path,
             req.file.originalname,
-            uploadedBy
+            uploadedBy,
+            options,
         );
 
         console.log('[SCORM CONTROLLER] Upload successful:', result.id);
@@ -39,6 +46,9 @@ export const uploadPackage = async (req, res) => {
 
     } catch (error) {
         console.error('[SCORM CONTROLLER UPLOAD ERROR]', error.message);
+        if (error?.response?.data) {
+            console.error('[SCORM CONTROLLER UPLOAD ERROR] Response:', error.response.data);
+        }
 
         // Clean up temp file if upload failed
         try {

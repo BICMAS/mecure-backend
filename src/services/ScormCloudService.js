@@ -37,45 +37,69 @@ export class ScormCloudService {
     /**
      * Submit a SCORM package to SCORM Cloud's import queue.
      *
-     * The file is streamed (not buffered into memory) to avoid OOM crashes on
-     * memory-constrained hosts, and this resolves as soon as the import job is
-     * accepted — it does NOT wait for the import to finish. Use
-     * `waitForImportJob` separately (e.g. in the background) to confirm.
+     * Options:
+     * - lessonId: use stable `lesson-{lessonId}` course id
+     * - courseId: LMS course id → stable `course-{courseId}` (versioning)
+     * - scormCloudCourseId: explicit SCORM Cloud course id (reuse on version upload)
      */
-    static async submitCourseUpload(filePath, filename, lessonId = null) {
-        console.log(`[UPLOAD] Submitting: ${filename} (lesson: ${lessonId || 'none'})`);
+    static async submitCourseUpload(filePath, filename, options = {}) {
+        const lessonId = options.lessonId ?? null;
+        const lmsCourseId = options.courseId ?? null;
+        const explicitScormCloudId = options.scormCloudCourseId ?? null;
+
+        console.log(`[UPLOAD] Submitting: ${filename}`, {
+            lessonId: lessonId || 'none',
+            courseId: lmsCourseId || 'none',
+            scormCloudCourseId: explicitScormCloudId || 'auto',
+        });
 
         if (!fs.existsSync(filePath)) throw new Error(`File missing: ${filePath}`);
         const stats = fs.statSync(filePath);
         if (stats.size === 0) throw new Error('File empty');
 
-        const courseId = lessonId ? `lesson-${lessonId}` : `pkg-${uuidv4().replace(/-/g, '')}`;
+        const courseId = explicitScormCloudId
+            ?? (lmsCourseId ? `course-${lmsCourseId}` : null)
+            ?? (lessonId ? `lesson-${lessonId}` : null)
+            ?? `pkg-${uuidv4().replace(/-/g, '')}`;
 
         const FormData = (await import('form-data')).default;
         const form = new FormData();
-        // Stream the file instead of reading it fully into memory. `knownLength`
-        // lets form-data set Content-Length so SCORM Cloud accepts the body.
         form.append('file', fs.createReadStream(filePath), {
             filename,
             contentType: 'application/zip',
             knownLength: stats.size,
         });
-        form.append('mayCreateNewVersion', 'true');
 
         const client = this.init();
-        const endpoint = `/courses/importJobs/upload?courseId=${encodeURIComponent(courseId)}`;
+        const query = new URLSearchParams({
+            courseId,
+            mayCreateNewVersion: 'true',
+        });
+        const endpoint = `/courses/importJobs/upload?${query.toString()}`;
 
         console.log(`[UPLOAD] POST to: ${endpoint}`);
         const uploadTimeoutMs = getScormUploadTimeoutForBytes(stats.size);
         console.log(
-            `[UPLOAD] Allowing ${Math.round(uploadTimeoutMs / 60000)} min for ${(stats.size / (1024 * 1024)).toFixed(1)} MB`
+            `[UPLOAD] Allowing ${Math.round(uploadTimeoutMs / 60000)} min for ${(stats.size / (1024 * 1024)).toFixed(1)} MB`,
         );
-        const res = await client.post(endpoint, form, {
-            headers: form.getHeaders(),
-            maxContentLength: Infinity,
-            maxBodyLength: Infinity,
-            timeout: uploadTimeoutMs,
-        });
+
+        let res;
+        try {
+            res = await client.post(endpoint, form, {
+                headers: form.getHeaders(),
+                maxContentLength: Infinity,
+                maxBodyLength: Infinity,
+                timeout: uploadTimeoutMs,
+            });
+        } catch (err) {
+            if (err?.response?.status === 409) {
+                throw this.formatAxiosError(
+                    err,
+                    'SCORM course already exists — version upload rejected. If an import is still running, wait for it to finish and retry',
+                );
+            }
+            throw this.formatAxiosError(err, 'SCORM Cloud upload failed');
+        }
 
         console.log('[UPLOAD] Status:', res.status);
         console.log('[UPLOAD] Data:', JSON.stringify(res.data, null, 2));
@@ -98,14 +122,49 @@ export class ScormCloudService {
         return { jobId, courseId };
     }
 
-    static async uploadCourse(filePath, filename, lessonId = null) {
+    static async uploadCourse(filePath, filename, options = {}) {
         try {
-            const { jobId, courseId } = await this.submitCourseUpload(filePath, filename, lessonId);
+            const { jobId, courseId } = await this.submitCourseUpload(filePath, filename, options);
             return await this.waitForImportJob(jobId, courseId, filename);
         } catch (err) {
             console.error('[UPLOAD ERROR]', err.message, err.response?.data);
             throw err;
         }
+    }
+
+    static mapCourseToScormVersion(course = {}) {
+        const candidates = [
+            course.learningStandard,
+            course.courseLearningStandard,
+            course.course_learning_standard,
+            typeof course.version === 'string' ? course.version : null,
+            typeof course.scormVersion === 'string' ? course.scormVersion : null,
+        ].filter(Boolean);
+
+        const normalized = candidates.map((value) => String(value).toUpperCase()).join(' ');
+
+        if (
+            normalized.includes('2004')
+            || normalized.includes('4TH')
+            || normalized.includes('CAM')
+            || normalized.includes('XAPI')
+            || normalized.includes('TINCAN')
+            || normalized.includes('CMI5')
+        ) {
+            return 'V2004';
+        }
+
+        if (
+            normalized.includes('1.2')
+            || normalized.includes('1_2')
+            || normalized.includes('SCORM12')
+            || normalized.includes('SCORM_1_2')
+        ) {
+            return 'V1_2';
+        }
+
+        // SCORM Cloud v2 `version` is usually a numeric revision id, not the standard name.
+        return 'V2004';
     }
 
     static async waitForImportJob(jobId, courseId, filename, maxAttempts = 180, intervalMs = 10000) {
@@ -128,7 +187,12 @@ export class ScormCloudService {
                 return {
                     scormCloudId: course.id || courseId,
                     title: course.title || filename.replace(/\.zip$/i, ''),
-                    scormVersion: course.version || '2004 4th Edition'
+                    scormVersion: ScormCloudService.mapCourseToScormVersion(course),
+                    learningStandard:
+                        course.learningStandard
+                        ?? course.courseLearningStandard
+                        ?? course.course_learning_standard
+                        ?? null,
                 };
             } catch (err) {
                 if (err.response?.status === 404) {
@@ -256,5 +320,27 @@ export class ScormCloudService {
             console.error('[SCORE FETCH ERROR]', err.response?.data || err.message);
             throw new Error(`Failed to fetch score for registration ${registrationId}`);
         }
+    }
+
+    static async getCourse(scormCloudId) {
+        const client = this.init();
+        const res = await client.get(`/courses/${encodeURIComponent(scormCloudId)}`);
+        return res.data;
+    }
+
+    /**
+     * Fetch a single course asset (e.g. imsmanifest.xml) from SCORM Cloud.
+     */
+    static async getCourseAsset(scormCloudId, assetPath) {
+        const client = this.init();
+        const res = await client.get(
+            `/courses/${encodeURIComponent(scormCloudId)}/asset`,
+            {
+                params: { path: assetPath },
+                responseType: 'text',
+                transformResponse: [(data) => data],
+            },
+        );
+        return res.data;
     }
 }

@@ -65,6 +65,12 @@ export async function linkModulesToManifestActivities(courseId) {
     if (!Array.isArray(activities) || activities.length === 0) return;
 
     const modules = sortModules(course.modules);
+    if (modules.length > activities.length) {
+        console.warn(
+            `[MODULE LINK] Course ${courseId} has ${modules.length} LMS modules but manifest has ${activities.length} activities`,
+        );
+    }
+
     const updates = modules
         .map((module, index) => {
             const activity = activities[index];

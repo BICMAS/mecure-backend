@@ -1,6 +1,7 @@
 import { CourseModel } from '../models/CourseModel.js';
 import { ModuleModel } from '../models/ModuleModel.js';
 import { resolveCourseImageUrl } from '../lib/courseImage.js';
+import { refreshCourseScormManifest } from '../lib/scormManifestRefresh.js';
 import { linkModulesToManifestActivities } from '../lib/modulePacing.js';
 
 export class CourseService {
@@ -113,6 +114,7 @@ export class CourseService {
 
         const updated = await CourseModel.updateNested(id, updateData);
 
+        await refreshCourseScormManifest(updated.id);
         await linkModulesToManifestActivities(updated.id);
         return CourseModel.findById(updated.id);
     }
