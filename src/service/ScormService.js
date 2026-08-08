@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { ScormPackageModel } from '../models/ScormPackageModel.js';
 import { ScormCloudService } from '../services/ScormCloudService.js';
+import { SCORM_MAX_UPLOAD_BYTES, SCORM_MAX_UPLOAD_MB } from '../lib/scormUploadLimits.js';
 
 export class ScormService {
     /**
@@ -15,11 +16,9 @@ export class ScormService {
             throw new Error('Temporary file not found');
         }
 
-        // Validate file size (SCORM Cloud has limits)
         const stats = fs.statSync(tempPath);
-        const maxSize = 500 * 1024 * 1024; // 500MB
-        if (stats.size > maxSize) {
-            throw new Error(`File size exceeds ${maxSize / 1024 / 1024}MB limit`);
+        if (stats.size > SCORM_MAX_UPLOAD_BYTES) {
+            throw new Error(`File size exceeds ${SCORM_MAX_UPLOAD_MB}MB limit`);
         }
 
         if (stats.size === 0) {
@@ -173,10 +172,10 @@ export class ScormService {
         const stats = fs.statSync(tempPath);
 
         return {
-            isValid: stats.size > 0 && stats.size <= (500 * 1024 * 1024),
+            isValid: stats.size > 0 && stats.size <= SCORM_MAX_UPLOAD_BYTES,
             size: stats.size,
             sizeMB: (stats.size / 1024 / 1024).toFixed(2),
-            maxSizeMB: 500
+            maxSizeMB: SCORM_MAX_UPLOAD_MB,
         };
     }
 

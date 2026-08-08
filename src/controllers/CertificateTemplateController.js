@@ -1,6 +1,7 @@
 import multer from 'multer';
 import fs from 'fs';
 import { CertificateTemplateService } from '../service/CertificateTemplateService.js';
+import { parseTemplateMetadata } from '../service/CertificatePdfService.js';
 import { StorageService } from '../services/StorageService.js';
 
 const ALLOWED_LOGO_MIME_TYPES = new Set([
@@ -31,11 +32,28 @@ const upload = multer({
     }
 });
 
+function cleanupUploadedFiles(files = []) {
+    for (const file of files) {
+        if (file?.path && fs.existsSync(file.path)) {
+            fs.unlinkSync(file.path);
+        }
+    }
+}
+
 export const uploadTemplate = (req, res) => {
-    upload.single('logo')(req, res, async (err) => {
+    upload.fields([
+        { name: 'logo', maxCount: 1 },
+        { name: 'signatorySignature', maxCount: 1 },
+        { name: 'signatorySignature2', maxCount: 1 },
+    ])(req, res, async (err) => {
         if (err) return res.status(400).json({ error: err.message || 'Upload failed' });
 
-        if (!req.file) return res.status(400).json({ error: 'No logo uploaded' });
+        const logoFile = req.files?.logo?.[0];
+        const signatorySignatureFile = req.files?.signatorySignature?.[0];
+        const signatorySignature2File = req.files?.signatorySignature2?.[0];
+        const tempFiles = [logoFile, signatorySignatureFile, signatorySignature2File].filter(Boolean);
+
+        if (!logoFile) return res.status(400).json({ error: 'No logo uploaded' });
 
         try {
             const uploadedBy = req.user.id;
@@ -54,25 +72,43 @@ export const uploadTemplate = (req, res) => {
             }
 
             const result = await CertificateTemplateService.uploadTemplate(
-                req.file.path,
-                req.file.originalname,
-                req.file.mimetype,
+                logoFile.path,
+                logoFile.originalname,
+                logoFile.mimetype,
                 description,
                 parsedThemeConfig,
-                uploadedBy
+                uploadedBy,
+                {
+                    signatorySignature: signatorySignatureFile,
+                    signatorySignature2: signatorySignature2File,
+                },
             );
-            res.status(201).json({
+
+            const response = {
                 url: await StorageService.resolveStorageUrl(result.blobUrl),
                 id: result.id,
                 filename: result.filename,
-                downloadUrl: `${req.protocol}://${req.get('host')}/api/v1/certificates/${result.id}/download`
-            });
+                downloadUrl: `${req.protocol}://${req.get('host')}/api/v1/certificates/${result.id}/download`,
+            };
+
+            const savedThemeConfig = parseTemplateMetadata(result.description).themeConfig;
+
+            if (savedThemeConfig.signatorySignatureBlobUrl) {
+                response.signatorySignatureUrl = await StorageService.resolveStorageUrl(
+                    savedThemeConfig.signatorySignatureBlobUrl,
+                );
+            }
+            if (savedThemeConfig.signatory2SignatureBlobUrl) {
+                response.signatory2SignatureUrl = await StorageService.resolveStorageUrl(
+                    savedThemeConfig.signatory2SignatureBlobUrl,
+                );
+            }
+
+            res.status(201).json(response);
         } catch (error) {
             res.status(400).json({ error: error.message });
         } finally {
-            if (req.file?.path && fs.existsSync(req.file.path)) {
-                fs.unlinkSync(req.file.path);
-            }
+            cleanupUploadedFiles(tempFiles);
         }
     });
 };

@@ -16,22 +16,66 @@ const ALLOWED_LOGO_MIME_TYPES = new Set([
 ]);
 
 export class CertificateTemplateService {
-    static async uploadTemplate(filePath, filename, mimeType, description, themeConfig, uploadedBy) {
-        if (!uploadedBy) throw new Error('Uploader ID required');
-        if (!filename) throw new Error('Filename required');
-
+    static assertAllowedImageFile(filename, mimeType) {
         const normalizedMime = String(mimeType || '').toLowerCase();
-        const lowerName = filename.toLowerCase();
+        const lowerName = String(filename || '').toLowerCase();
         const isAllowedMime = ALLOWED_LOGO_MIME_TYPES.has(normalizedMime);
         const isAllowedExt = ['.png', '.jpg', '.jpeg', '.webp'].some((ext) =>
-            lowerName.endsWith(ext)
+            lowerName.endsWith(ext),
         );
 
         if (!isAllowedMime && !isAllowedExt) {
-            throw new Error('Only PNG, JPG, or WEBP logo files are allowed');
+            throw new Error('Only PNG, JPG, or WEBP image files are allowed');
+        }
+    }
+
+    static async uploadSignatureAsset(filePath, filename, mimeType) {
+        CertificateTemplateService.assertAllowedImageFile(filename, mimeType);
+        const objectKey = StorageService.buildObjectKey('certificates/signatures', filename);
+        await StorageService.uploadFile(objectKey, filePath, mimeType);
+        return {
+            blobUrl: objectKey,
+            mimeType,
+        };
+    }
+
+    static async uploadTemplate(
+        filePath,
+        filename,
+        mimeType,
+        description,
+        themeConfig,
+        uploadedBy,
+        signatureFiles = {},
+    ) {
+        if (!uploadedBy) throw new Error('Uploader ID required');
+        if (!filename) throw new Error('Filename required');
+
+        CertificateTemplateService.assertAllowedImageFile(filename, mimeType);
+
+        const enrichedThemeConfig = { ...(themeConfig || {}) };
+
+        if (signatureFiles.signatorySignature) {
+            const uploadedSignature = await CertificateTemplateService.uploadSignatureAsset(
+                signatureFiles.signatorySignature.path,
+                signatureFiles.signatorySignature.originalname,
+                signatureFiles.signatorySignature.mimetype,
+            );
+            enrichedThemeConfig.signatorySignatureBlobUrl = uploadedSignature.blobUrl;
+            enrichedThemeConfig.signatorySignatureMimeType = uploadedSignature.mimeType;
         }
 
-        const metadata = serializeTemplateMetadata(description, themeConfig);
+        if (signatureFiles.signatorySignature2) {
+            const uploadedSignature = await CertificateTemplateService.uploadSignatureAsset(
+                signatureFiles.signatorySignature2.path,
+                signatureFiles.signatorySignature2.originalname,
+                signatureFiles.signatorySignature2.mimetype,
+            );
+            enrichedThemeConfig.signatory2SignatureBlobUrl = uploadedSignature.blobUrl;
+            enrichedThemeConfig.signatory2SignatureMimeType = uploadedSignature.mimeType;
+        }
+
+        const metadata = serializeTemplateMetadata(description, enrichedThemeConfig);
 
         const result = await CertificateTemplateModel.uploadAndSave(
             filePath,
