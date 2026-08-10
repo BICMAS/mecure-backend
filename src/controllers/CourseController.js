@@ -72,3 +72,31 @@ export const deleteModule = async (req, res) => {
         res.status(404).json({ error: error.message });
     }
 };
+
+export const resetCourseProgress = async (req, res) => {
+    try {
+        const { id: courseId } = req.params;
+        const dryRun = req.query.dryRun === 'true';
+        const {
+            deleteCertificates = true,
+            resetModuleProgress = true,
+            newPacingStartDate,
+        } = req.body ?? {};
+
+        const result = await CourseService.resetCourseProgress(
+            courseId,
+            {
+                deleteCertificates,
+                resetModuleProgress,
+                newPacingStartDate,
+                dryRun,
+            },
+            req.user,
+        );
+
+        res.json(result);
+    } catch (error) {
+        const status = error.message === 'Course not found' ? 404 : 400;
+        res.status(status).json({ error: error.message });
+    }
+};

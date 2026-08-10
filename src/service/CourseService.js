@@ -3,6 +3,7 @@ import { ModuleModel } from '../models/ModuleModel.js';
 import { resolveCourseImageUrl } from '../lib/courseImage.js';
 import { refreshCourseScormManifest } from '../lib/scormManifestRefresh.js';
 import { linkModulesToManifestActivities } from '../lib/modulePacing.js';
+import { resetCourseProgress } from '../lib/courseProgressReset.js';
 
 export class CourseService {
     static async createDraft(data, creatorId) {
@@ -170,5 +171,26 @@ export class CourseService {
         console.log('[COURSE SERVICE] Deleting module ID:', moduleId, 'from course:', courseId);
         await ModuleModel.delete(moduleId);
         return { message: 'Module deleted successfully' };
+    }
+
+    /**
+     * Bulk reset assigned learner progress after SCORM reload/publish.
+     * Run AFTER the updated SCORM package is published.
+     */
+    static async resetCourseProgress(courseId, options, requester) {
+        if (!courseId) throw new Error('Course ID required');
+        if (!requester?.id) throw new Error('Authenticated user required');
+        if (!['HR_MANAGER', 'SUPER_ADMIN'].includes(requester.userRole)) {
+            throw new Error('Insufficient role to reset course progress');
+        }
+
+        return resetCourseProgress({
+            courseId,
+            requester,
+            deleteCertificates: options.deleteCertificates !== false,
+            resetModuleProgress: options.resetModuleProgress !== false,
+            newPacingStartDate: options.newPacingStartDate,
+            dryRun: options.dryRun === true,
+        });
     }
 }
