@@ -8,6 +8,7 @@ import {
     resolveAssignmentCourseImage,
     resolveCourseImageUrl,
 } from '../lib/courseImage.js';
+import { CourseService } from './CourseService.js';
 
 export class DashboardService {
     static async getHRDashboard(orgId) {
@@ -95,7 +96,7 @@ export class LearnerDashboardService {
         if (currentCourse?.course) {
             resolvedCurrentCourse = {
                 ...currentCourse,
-                course: await resolveCourseImageUrl(currentCourse.course),
+                course: CourseService.formatCourse(await resolveCourseImageUrl(currentCourse.course)),
             };
         }
 
@@ -108,7 +109,12 @@ export class LearnerDashboardService {
             learningPaths,
             learningActivity,
             currentCourse: resolvedCurrentCourse,
-            unfinishedCourses: resolvedUnfinishedCourses,
+            unfinishedCourses: resolvedUnfinishedCourses.map((assignment) => ({
+                ...assignment,
+                course: assignment.course
+                    ? CourseService.formatCourse(assignment.course)
+                    : assignment.course,
+            })),
         };
     }
 }

@@ -14,10 +14,17 @@
     "test": "node scripts/smoke-test.js",
     "test:smoke": "node scripts/smoke-test.js",
     "test:modules": "node scripts/test-module-upsert.js",
+    "test:categories": "node scripts/test-course-category.js",
+    "test:certificates": "node scripts/test-course-certificate-template.js",
+    "test:lock": "node scripts/test-course-lock.js",
+    "test:duration": "node scripts/test-course-duration.js",
+    "test:template-preview": "node scripts/test-certificate-template-preview.js",
     "test:scorm-refresh": "node scripts/test-scorm-registration-refresh.js",
     "vapid:generate": "npx web-push generate-vapid-keys",
     "backfill:attempts:dry": "node src/scripts/backfillAttemptsFromScorm.js",
-    "backfill:attempts:apply": "node src/scripts/backfillAttemptsFromScorm.js --apply"
+    "backfill:attempts:apply": "node src/scripts/backfillAttemptsFromScorm.js --apply",
+    "overdue:extend:dry": "node scripts/extend-overdue-due-dates.js --orgId=cmrs281wj0000ot9k1wtfkkff --dueDate=2026-12-31",
+    "overdue:extend:apply": "node scripts/extend-overdue-due-dates.js --apply --orgId=cmrs281wj0000ot9k1wtfkkff --dueDate=2026-12-31"
   },
   "keywords": [],
   "author": "",

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import authRouter from './authRoutes.js';
 import userRouter from './userRoutes.js';
 import courseRouter from './courseRoutes.js';
+import courseCategoryRouter from './courseCategoryRoutes.js';
 import scormRouter from './scormRoutes.js';
 import groupRouter from './groupRoutes.js';
 import assignmentRouter from './assignmentRoutes.js';
@@ -23,6 +24,7 @@ router.use('/auth', authRouter);
 router.use('/users', userRouter);
 router.use('/groups', groupRouter);
 router.use('/courses', courseRouter);
+router.use('/course-categories', courseCategoryRouter);
 router.use('/scorm-packages', scormRouter)
 router.use('/assignments', assignmentRouter);
 router.use('/dashboard', dashboardRouter);

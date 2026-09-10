@@ -7,7 +7,16 @@ export class AssignmentModel {
             const assignment = await prisma.assignment.create({
                 data: assignmentData,
                 include: {
-                    course: true,
+                    course: {
+                        include: {
+                            category: {
+                                select: { id: true, name: true, slug: true },
+                            },
+                            certificateTemplate: {
+                                select: { id: true, filename: true, description: true },
+                            },
+                        },
+                    },
                     assigner: true,
                     assigneeUser: true
                 }
@@ -22,7 +31,16 @@ export class AssignmentModel {
             where: { courseId },
             include: {
                 assigneeUser: { select: { id: true, fullName: true, email: true } },
-                course: true,
+                course: {
+                    include: {
+                        category: {
+                            select: { id: true, name: true, slug: true },
+                        },
+                        certificateTemplate: {
+                            select: { id: true, filename: true, description: true },
+                        },
+                    },
+                },
                 assigner: { select: { id: true, fullName: true } }
             }
         });
@@ -45,6 +63,12 @@ export class AssignmentModel {
             include: {
                 course: {
                     include: {
+                        category: {
+                            select: { id: true, name: true, slug: true },
+                        },
+                        certificateTemplate: {
+                            select: { id: true, filename: true, description: true },
+                        },
                         modules: {
                             include: {
                                 lessons: true
@@ -70,6 +94,12 @@ export class AssignmentModel {
             include: {
                 course: {
                     include: {
+                        category: {
+                            select: { id: true, name: true, slug: true },
+                        },
+                        certificateTemplate: {
+                            select: { id: true, filename: true, description: true },
+                        },
                         modules: {
                             include: { lessons: true }
                         }
@@ -92,6 +122,12 @@ export class AssignmentModel {
             include: {
                 course: {
                     include: {
+                        category: {
+                            select: { id: true, name: true, slug: true },
+                        },
+                        certificateTemplate: {
+                            select: { id: true, filename: true, description: true },
+                        },
                         modules: {
                             include: {
                                 lessons: true

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import multer from 'multer';
-import { getCourses, createDraft, updateCourse, publishCourse, getCourseById, deleteCourse, deleteModule, resetCourseProgress } from '../controllers/CourseController.js';
+import { getCourses, createDraft, updateCourse, publishCourse, lockCourse, unlockCourse, getCourseById, deleteCourse, deleteModule, resetCourseProgress } from '../controllers/CourseController.js';
 import { getCourseModuleAccess } from '../controllers/ModulePacingController.js';
 import { authenticateToken, requireRole } from '../middleware/authMiddleware.js';
 import { addCourseImage } from '../controllers/CourseImageController.js';
@@ -20,6 +20,8 @@ courseRouter.get('/', authenticateToken, getCourses);
 courseRouter.post('/draft', authenticateToken, requireRole(['HR_MANAGER', 'SUPER_ADMIN']), createDraft);
 courseRouter.patch('/:id', authenticateToken, requireRole(['HR_MANAGER', 'SUPER_ADMIN']), updateCourse);
 courseRouter.patch('/:id/publish', authenticateToken, requireRole(['HR_MANAGER', 'SUPER_ADMIN']), publishCourse);
+courseRouter.patch('/:id/lock', authenticateToken, requireRole(['HR_MANAGER', 'SUPER_ADMIN']), lockCourse);
+courseRouter.patch('/:id/unlock', authenticateToken, requireRole(['HR_MANAGER', 'SUPER_ADMIN']), unlockCourse);
 courseRouter.get('/:id/module-access', authenticateToken, getCourseModuleAccess);
 courseRouter.post(
     '/:id/reset-progress',

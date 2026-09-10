@@ -52,6 +52,11 @@ export class CertificateModel {
     }
 
     static async assignTemplateToCourse({ courseId, templateId, actorId }) {
+        await prisma.course.update({
+            where: { id: courseId },
+            data: { certificateTemplateId: templateId || null },
+        });
+
         const existing = await prisma.auditLog.findFirst({
             where: {
                 eventType: COURSE_TEMPLATE_EVENT,
@@ -61,7 +66,7 @@ export class CertificateModel {
             orderBy: { createdAt: 'desc' }
         });
 
-        const payload = { courseId, templateId };
+        const payload = { courseId, templateId: templateId || null };
         if (existing) {
             return prisma.auditLog.update({
                 where: { id: existing.id },
@@ -81,17 +86,12 @@ export class CertificateModel {
     }
 
     static async getAssignedTemplateForCourse(courseId) {
-        const log = await prisma.auditLog.findFirst({
-            where: {
-                eventType: COURSE_TEMPLATE_EVENT,
-                targetType: 'COURSE',
-                targetId: courseId
-            },
-            orderBy: { createdAt: 'desc' }
+        const course = await prisma.course.findUnique({
+            where: { id: courseId },
+            select: { certificateTemplateId: true },
         });
 
-        if (!log?.payload || typeof log.payload !== 'object') return null;
-        return log.payload?.templateId || null;
+        return course?.certificateTemplateId || null;
     }
 
     static async assignTemplateToOrgHR({ orgId, hrManagerId, templateId, actorId }) {

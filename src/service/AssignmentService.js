@@ -3,6 +3,7 @@ import { CourseModel } from '../models/CourseModel.js';
 import { UserModel } from '../models/UserModel.js';
 import { getAssignmentCompletionState } from '../lib/courseCompletion.js';
 import { resolveAssignmentCourseImage } from '../lib/courseImage.js';
+import { CourseService } from './CourseService.js';
 
 export class AssignmentService {
     static async createAssignments(data, assigner) {
@@ -74,8 +75,13 @@ export class AssignmentService {
                 ));
             }
 
+            const withImage = await resolveAssignmentCourseImage(assignment);
             enriched.push({
-                ...(await resolveAssignmentCourseImage(assignment)),
+                ...withImage,
+                course: withImage.course
+                    ? CourseService.formatCourse(withImage.course)
+                    : withImage.course,
+                isLocked: Boolean(withImage.course?.isLocked),
                 progress: Math.min(100, Math.max(0, progress)),
                 status: completionState.status,
                 passingScore: completionState.passingScore,

@@ -49,6 +49,28 @@ export const publishCourse = async (req, res) => {
     }
 };
 
+export const lockCourse = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const result = await CourseService.lockCourse(id, req.user);
+        res.json(result);
+    } catch (error) {
+        const status = error.message === 'Course not found' ? 404 : 400;
+        res.status(status).json({ error: error.message });
+    }
+};
+
+export const unlockCourse = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const result = await CourseService.unlockCourse(id, req.user);
+        res.json(result);
+    } catch (error) {
+        const status = error.message === 'Course not found' ? 404 : 400;
+        res.status(status).json({ error: error.message });
+    }
+};
+
 export const deleteCourse = async (req, res) => {
     try {
         const { id } = req.params;

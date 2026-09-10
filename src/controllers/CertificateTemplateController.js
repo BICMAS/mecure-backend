@@ -3,6 +3,7 @@ import fs from 'fs';
 import { CertificateTemplateService } from '../service/CertificateTemplateService.js';
 import { parseTemplateMetadata } from '../service/CertificatePdfService.js';
 import { StorageService } from '../services/StorageService.js';
+import { COURSE_LOCKED_MESSAGE } from '../lib/courseLock.js';
 
 const ALLOWED_LOGO_MIME_TYPES = new Set([
     'image/png',
@@ -113,6 +114,15 @@ export const uploadTemplate = (req, res) => {
     });
 };
 
+export const listTemplates = async (req, res) => {
+    try {
+        const templates = await CertificateTemplateService.listTemplates();
+        return res.status(200).json(templates);
+    } catch (error) {
+        return res.status(500).json({ error: error.message });
+    }
+};
+
 export const downloadTemplate = async (req, res) => {
     try {
         const { id } = req.params;
@@ -212,6 +222,25 @@ export const getMyAssignedTemplate = async (req, res) => {
     }
 };
 
+export const downloadMyAssignedTemplatePreview = async (req, res) => {
+    try {
+        const { filename, pdfBytes } = await CertificateTemplateService.generateAssignedTemplatePreviewPdf(
+            req.user.id,
+            req.user.orgId,
+        );
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        return res.status(200).send(pdfBytes);
+    } catch (error) {
+        const knownNotFound = [
+            'No certificate template assigned to this HR manager',
+            'Certificate template not found',
+        ];
+        const status = knownNotFound.includes(error.message) ? 404 : 400;
+        return res.status(status).json({ error: error.message });
+    }
+};
+
 export const getCourseAssignedTemplate = async (req, res) => {
     try {
         const { courseId } = req.params;
@@ -243,9 +272,12 @@ export const issueCertificate = async (req, res) => {
         const knownNotFound = [
             'User not found',
             'Course not found',
-            'Certificate template not found'
+            'Certificate template not found',
+            'No certificate template assigned to this course',
         ];
-        const status = knownNotFound.includes(error.message) ? 404 : 400;
+        const status = error.message === COURSE_LOCKED_MESSAGE
+            ? 403
+            : knownNotFound.includes(error.message) ? 404 : 400;
         return res.status(status).json({ error: error.message });
     }
 };
@@ -259,11 +291,11 @@ export const claimLearnerCertificate = async (req, res) => {
         const knownNotFound = [
             'Course not assigned to learner',
             'Course not found',
-            'No certificate template assigned to this course or organization',
+            'No certificate template assigned to this course',
             'No template assigned to course',
             'Certificate template not found'
         ];
-        const status = error.message === 'Course not yet completed'
+        const status = error.message === COURSE_LOCKED_MESSAGE || error.message === 'Course not yet completed'
             ? 403
             : knownNotFound.includes(error.message)
                 ? 404
@@ -290,12 +322,12 @@ export const downloadLearnerCertificate = async (req, res) => {
         const knownNotFound = [
             'Course not assigned to learner',
             'Course not found',
-            'No certificate template assigned to this course or organization',
+            'No certificate template assigned to this course',
             'No template assigned to course',
             'Certificate template not found',
             'Certificate file not found',
         ];
-        const status = error.message === 'Course not yet completed'
+        const status = error.message === COURSE_LOCKED_MESSAGE || error.message === 'Course not yet completed'
             ? 403
             : knownNotFound.includes(error.message)
                 ? 404

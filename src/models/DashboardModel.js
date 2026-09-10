@@ -392,7 +392,7 @@ export class DashboardModel {
             const attempt = await prisma.attempt.findFirst({
                 where: { userId, status: 'IN_PROGRESS' },
                 orderBy: { updatedAt: 'desc' }, // most recent
-                include: { course: true, scormPackage: true }
+                include: { course: { include: { category: { select: { id: true, name: true, slug: true } }, certificateTemplate: { select: { id: true, filename: true, description: true } } } }, scormPackage: true }
             });
 
             if (!attempt) return null;
@@ -405,7 +405,7 @@ export class DashboardModel {
                         courseId: attempt.courseId,
                         assigneeUserId: userId
                     },
-                    include: { course: true }
+                    include: { course: { include: { category: { select: { id: true, name: true, slug: true } }, certificateTemplate: { select: { id: true, filename: true, description: true } } } } }
                 });
             }
 
@@ -476,7 +476,7 @@ export class DashboardModel {
         try {
             const assignments = await prisma.assignment.findMany({
                 where: { assigneeUserId: userId },
-                include: { course: true },
+                include: { course: { include: { category: { select: { id: true, name: true, slug: true } }, certificateTemplate: { select: { id: true, filename: true, description: true } } } } },
             });
 
             const unfinished = [];

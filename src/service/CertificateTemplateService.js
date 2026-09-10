@@ -3,10 +3,16 @@ import { CertificateModel } from '../models/CertificateModel.js';
 import { CourseModel } from '../models/CourseModel.js';
 import { UserModel } from '../models/UserModel.js';
 import { AssignmentModel } from '../models/AssignmentModel.js';
-import { AttemptModel } from '../models/AttemptModel.js';
 import { getAssignmentCompletionState } from '../lib/courseCompletion.js';
 import { CertificatePdfService, serializeTemplateMetadata } from './CertificatePdfService.js';
 import { StorageService } from '../services/StorageService.js';
+import { resolveIssuanceTemplateId } from '../lib/courseCertificateTemplate.js';
+import {
+    formatAssignedTemplateForClient,
+    parseTemplateDisplayFields,
+    SAMPLE_CERTIFICATE_PREVIEW,
+} from '../lib/certificateTemplatePreview.js';
+import { assertLearnerCourseUnlocked } from '../lib/courseLock.js';
 
 const ALLOWED_LOGO_MIME_TYPES = new Set([
     'image/png',
@@ -100,36 +106,45 @@ export class CertificateTemplateService {
         return template;
     }
 
+    static async listTemplates() {
+        return CertificateTemplateModel.findMany();
+    }
+
     static async assignTemplateToCourse(courseId, templateId, actorId, requester) {
         if (!courseId) throw new Error('Course ID required');
-        if (!templateId) throw new Error('Template ID required');
         if (!actorId) throw new Error('Actor ID required');
 
-        const [course, template] = await Promise.all([
-            CourseModel.findById(courseId),
-            CertificateTemplateModel.findById(templateId)
-        ]);
+        const normalizedTemplateId = templateId === '' || templateId == null ? null : templateId;
 
+        const course = await CourseModel.findById(courseId);
         if (!course) throw new Error('Course not found');
-        if (!template) throw new Error('Certificate template not found');
 
         if (requester?.userRole === 'HR_MANAGER') {
+            if (!normalizedTemplateId) throw new Error('Template ID required');
             if (!requester.orgId) throw new Error('HR must be in an organization');
             const assignedTemplateId = await CertificateModel.getAssignedTemplateForHR(requester.orgId, actorId);
             if (!assignedTemplateId) throw new Error('No certificate template assigned to HR manager');
-            if (assignedTemplateId !== templateId) {
+            if (assignedTemplateId !== normalizedTemplateId) {
                 throw new Error('HR manager can only assign their allocated certificate template');
             }
         }
 
-        await CertificateModel.assignTemplateToCourse({ courseId, templateId, actorId });
+        if (normalizedTemplateId) {
+            const template = await CertificateTemplateModel.findById(normalizedTemplateId);
+            if (!template) throw new Error('Certificate template not found');
+        }
 
-        const reissueResult = await CertificateTemplateService.reissueCertificatesForCourse(
+        await CertificateModel.assignTemplateToCourse({
             courseId,
+            templateId: normalizedTemplateId,
             actorId,
-        );
+        });
 
-        return { courseId, templateId, ...reissueResult };
+        const reissueResult = normalizedTemplateId
+            ? await CertificateTemplateService.reissueCertificatesForCourse(courseId, actorId)
+            : { reissuedCount: 0, errors: [] };
+
+        return { courseId, templateId: normalizedTemplateId, ...reissueResult };
     }
 
     static async assignTemplateToHRManager({ templateId, orgId, hrManagerId, actorId }) {
@@ -168,12 +183,12 @@ export class CertificateTemplateService {
         const template = await CertificateTemplateModel.findById(templateId);
         if (!template) throw new Error('Certificate template not found');
 
-        return {
+        return CertificateTemplateService.formatAssignedTemplateWithAssets({
             orgId,
             hrManagerId,
             templateId,
-            template
-        };
+            template,
+        });
     }
 
     static async getAssignedTemplateForCourse(courseId) {
@@ -182,7 +197,8 @@ export class CertificateTemplateService {
         const course = await CourseModel.findById(courseId);
         if (!course) throw new Error('Course not found');
 
-        const templateId = await CertificateModel.getAssignedTemplateForCourse(courseId);
+        const templateId = course.certificateTemplateId
+            ?? await CertificateModel.getAssignedTemplateForCourse(courseId);
         if (!templateId) throw new Error('No template assigned to course');
 
         const template = await CertificateTemplateModel.findById(templateId);
@@ -191,7 +207,71 @@ export class CertificateTemplateService {
         return {
             courseId,
             templateId,
-            template
+            template: (await CertificateTemplateService.formatAssignedTemplateWithAssets({
+                templateId,
+                template,
+            })).template,
+        };
+    }
+
+    static async resolveTemplateAssetUrl(storedValue) {
+        if (!storedValue) return null;
+        try {
+            return await StorageService.resolveStorageUrl(storedValue);
+        } catch (error) {
+            console.error('Failed to resolve certificate template asset URL:', error);
+            return null;
+        }
+    }
+
+    static async formatAssignedTemplateWithAssets({
+        orgId = null,
+        hrManagerId = null,
+        templateId,
+        template,
+    }) {
+        const display = parseTemplateDisplayFields(template?.description);
+        const [previewUrl, signatorySignatureUrl, signatory2SignatureUrl] = await Promise.all([
+            CertificateTemplateService.resolveTemplateAssetUrl(template?.blobUrl),
+            CertificateTemplateService.resolveTemplateAssetUrl(display.signatorySignatureBlobUrl),
+            CertificateTemplateService.resolveTemplateAssetUrl(display.signatory2SignatureBlobUrl),
+        ]);
+
+        return formatAssignedTemplateForClient(
+            {
+                orgId,
+                hrManagerId,
+                templateId,
+                template,
+            },
+            previewUrl,
+            {
+                signatorySignatureUrl,
+                signatory2SignatureUrl,
+            },
+        );
+    }
+
+    static async generateAssignedTemplatePreviewPdf(hrManagerId, orgId) {
+        if (!hrManagerId) throw new Error('HR Manager ID required');
+        if (!orgId) throw new Error('HR must be in an organization');
+
+        const templateId = await CertificateModel.getAssignedTemplateForHR(orgId, hrManagerId);
+        if (!templateId) throw new Error('No certificate template assigned to this HR manager');
+
+        const template = await CertificateTemplateModel.findById(templateId);
+        if (!template) throw new Error('Certificate template not found');
+
+        const pdfBytes = await CertificatePdfService.generatePdfBytes({
+            template,
+            traineeName: SAMPLE_CERTIFICATE_PREVIEW.traineeName,
+            courseTitle: SAMPLE_CERTIFICATE_PREVIEW.courseTitle,
+            issuedAt: new Date(),
+        });
+
+        return {
+            filename: 'mecure-certificate-preview.pdf',
+            pdfBytes,
         };
     }
 
@@ -207,18 +287,12 @@ export class CertificateTemplateService {
         };
     }
 
-    static async resolveTemplateIdForIssuance({ courseId, templateId, user }) {
-        if (templateId) return templateId;
+    static async resolveTemplateIdForIssuance({ courseId }) {
+        const course = await CourseModel.findById(courseId);
+        const courseTemplateId = course?.certificateTemplateId
+            ?? await CertificateModel.getAssignedTemplateForCourse(courseId);
 
-        const courseTemplateId = await CertificateModel.getAssignedTemplateForCourse(courseId);
-        if (courseTemplateId) return courseTemplateId;
-
-        if (user?.orgId) {
-            const orgTemplateId = await CertificateModel.getAssignedTemplateForOrg(user.orgId);
-            if (orgTemplateId) return orgTemplateId;
-        }
-
-        return null;
+        return resolveIssuanceTemplateId({ courseTemplateId });
     }
 
     static async reissueCertificate({ certificate, user, course, templateId, issuerId }) {
@@ -231,7 +305,7 @@ export class CertificateTemplateService {
             user,
         });
         if (!resolvedTemplateId) {
-            throw new Error('No certificate template assigned to this course or organization');
+            throw new Error('No certificate template assigned to this course');
         }
 
         const template = await CertificateTemplateModel.findById(resolvedTemplateId);
@@ -386,6 +460,7 @@ export class CertificateTemplateService {
         ]);
         if (!user) throw new Error('User not found');
         if (!course) throw new Error('Course not found');
+        assertLearnerCourseUnlocked(course, requester?.userRole);
         if (requester?.userRole === 'HR_MANAGER') {
             if (!requester.orgId) throw new Error('HR must be in an organization');
             if (user.orgId !== requester.orgId) {
@@ -399,7 +474,7 @@ export class CertificateTemplateService {
             user,
         });
         if (!resolvedTemplateId) {
-            throw new Error('No certificate template assigned to this course or organization');
+            throw new Error('No certificate template assigned to this course');
         }
 
         const template = await CertificateTemplateModel.findById(resolvedTemplateId);
@@ -439,7 +514,9 @@ export class CertificateTemplateService {
             throw new Error('Course not assigned to learner');
         }
 
-        const attempt = await AttemptModel.findByUserAndCourse(learnerId, courseId);
+        const course = await CourseModel.findById(courseId);
+        if (!course) throw new Error('Course not found');
+
         const completionState = await getAssignmentCompletionState(learnerId, courseId);
         if (!completionState.complete || !completionState.passed) {
             if (completionState.requiresRetake) {
@@ -462,6 +539,8 @@ export class CertificateTemplateService {
                 reissued: current.reissued,
             };
         }
+
+        assertLearnerCourseUnlocked(course, 'LEARNER');
 
         const created = await this.issueCertificate({
             userId: learnerId,

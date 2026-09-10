@@ -16,6 +16,8 @@ import {
 } from '../lib/coursePassing.js';
 import { getCourseScormPackageIds, getAssignmentCompletionState, repairStaleCourseAttemptIfNeeded } from '../lib/courseCompletion.js';
 import { syncLearnerModuleProgressFromRegistration } from '../lib/modulePacing.js';
+import { CourseModel } from '../models/CourseModel.js';
+import { assertLearnerCourseUnlocked } from '../lib/courseLock.js';
 
 function buildSyncResponse(scormAttempt, outcome) {
     return {
@@ -28,8 +30,16 @@ function buildSyncResponse(scormAttempt, outcome) {
 }
 
 export class AttemptService {
+    static async assertUnlockedForLearner(courseId, user) {
+        const course = await CourseModel.findLockState(courseId);
+        if (!course) throw new Error('Course not found');
+        assertLearnerCourseUnlocked(course, user?.userRole);
+        return course;
+    }
+
     static async updateProgress(courseId, data, user) {
         if (user.userRole !== 'LEARNER') throw new Error('Only learners can update progress');
+        await AttemptService.assertUnlockedForLearner(courseId, user);
         if (data.completionPercentage < 0 || data.completionPercentage > 100) {
             throw new Error('Completion percentage must be 0-100');
         }
@@ -113,6 +123,9 @@ export class AttemptService {
         const registrationId = scormAttempt.scormCloudRegistrationId;
         const previousStatus = scormAttempt.status;
         const passingConfig = await getCoursePassingConfigByScormPackageId(scormAttempt.scormPackageId);
+        if (passingConfig.courseId) {
+            await AttemptService.assertUnlockedForLearner(passingConfig.courseId, requester);
+        }
 
         const client = ScormCloudService.init();
         const res = await client.get(`/registrations/${registrationId}`);
@@ -204,6 +217,7 @@ export class AttemptService {
 
         const assignment = await AssignmentModel.findByCourseAndLearner(courseId, user.id);
         if (!assignment) throw new Error('Course not assigned to learner');
+        await AttemptService.assertUnlockedForLearner(courseId, user);
 
         await repairStaleCourseAttemptIfNeeded(user.id, courseId);
 
@@ -245,6 +259,7 @@ export class AttemptService {
                 {
                     courseId,
                     forceNewRegistration: true,
+                    requesterRole: user.userRole,
                 },
             );
             launches.push(launch);
@@ -273,6 +288,7 @@ export class AttemptService {
 
         const assignment = await AssignmentModel.findByCourseAndLearner(courseId, user.id);
         if (!assignment) throw new Error('Course not assigned to learner');
+        await AttemptService.assertUnlockedForLearner(courseId, user);
 
         await repairStaleCourseAttemptIfNeeded(user.id, courseId);
 
@@ -314,6 +330,7 @@ export class AttemptService {
                     courseId,
                     forceNewRegistration: true,
                     preserveOfficialAttempt: true,
+                    requesterRole: user.userRole,
                 },
             );
             launches.push(launch);
@@ -332,6 +349,7 @@ export class AttemptService {
     static async launchCourseSession(courseId, user, options = {}) {
         const assignment = await AssignmentModel.findByCourseAndLearner(courseId, user.id);
         if (!assignment) throw new Error('Course not assigned to learner');
+        await AttemptService.assertUnlockedForLearner(courseId, user);
 
         await repairStaleCourseAttemptIfNeeded(user.id, courseId);
 
@@ -349,6 +367,7 @@ export class AttemptService {
             {
                 courseId,
                 forceNewRegistration: false,
+                requesterRole: user.userRole,
             },
         );
 

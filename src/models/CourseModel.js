@@ -5,6 +5,18 @@ import {
     sortModulesForUpsert,
 } from '../lib/courseModuleUpsert.js';
 
+const categoryInclude = {
+    category: {
+        select: { id: true, name: true, slug: true },
+    },
+};
+
+const certificateTemplateInclude = {
+    certificateTemplate: {
+        select: { id: true, filename: true, description: true },
+    },
+};
+
 const courseInclude = {
     modules: {
         orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
@@ -17,6 +29,8 @@ const courseInclude = {
         },
     },
     scormPackage: true,
+    ...categoryInclude,
+    ...certificateTemplateInclude,
 };
 
 function buildScalarUpdateData(data) {
@@ -33,6 +47,13 @@ function buildScalarUpdateData(data) {
         modulePacingEnabled: data.modulePacingEnabled ?? undefined,
         modulePacingDays: data.modulePacingDays ?? undefined,
         pacingStartDate: data.pacingStartDate ?? undefined,
+        ...(data.categoryId !== undefined ? { categoryId: data.categoryId } : {}),
+        ...(data.certificateTemplateId !== undefined
+            ? { certificateTemplateId: data.certificateTemplateId }
+            : {}),
+        ...(data.durationEstimate !== undefined
+            ? { durationEstimate: data.durationEstimate }
+            : {}),
         updatedAt: new Date(),
     };
 }
@@ -122,14 +143,18 @@ export class CourseModel {
     static async findMany() {
         return prisma.course.findMany({
             where: { status: 'PUBLISHED' },
-            include: { modules: { include: { lessons: { include: { scormPackage: true } } } } }
+            include: {
+                modules: { include: { lessons: { include: { scormPackage: true } } } },
+                ...categoryInclude,
+                ...certificateTemplateInclude,
+            }
         });
     }
 
     static async create(data) {
         return prisma.course.create({
             data,
-            include: { modules: true }
+            include: { modules: true, ...categoryInclude, ...certificateTemplateInclude }
         });
     }
 
@@ -156,6 +181,8 @@ export class CourseModel {
                     }
                 },
                 scormPackage: true,
+                ...categoryInclude,
+                ...certificateTemplateInclude,
                 creator: {
                     select: { id: true, fullName: true, email: true }
                 }
@@ -210,13 +237,76 @@ export class CourseModel {
     }
 
 
+    static async setCertificateTemplateId(id, certificateTemplateId) {
+        return prisma.course.update({
+            where: { id },
+            data: { certificateTemplateId },
+            include: courseInclude,
+        });
+    }
+
+    static async findLockState(id) {
+        if (!id) return null;
+        return prisma.course.findUnique({
+            where: { id },
+            select: { id: true, isLocked: true, lockedAt: true, lockedBy: true },
+        });
+    }
+
+    static async findLockStateByScormPackageId(packageId) {
+        if (!packageId) return null;
+
+        const byCoursePackage = await prisma.course.findFirst({
+            where: { scormPackageId: packageId },
+            select: { id: true, isLocked: true, lockedAt: true, lockedBy: true },
+        });
+        if (byCoursePackage) return byCoursePackage;
+
+        const lesson = await prisma.lesson.findFirst({
+            where: { scormPackageId: packageId },
+            select: {
+                module: {
+                    select: {
+                        course: {
+                            select: { id: true, isLocked: true, lockedAt: true, lockedBy: true },
+                        },
+                    },
+                },
+            },
+        });
+
+        return lesson?.module?.course ?? null;
+    }
+
+    static async setLockState(id, { isLocked, lockedAt, lockedBy, actorId, eventType }) {
+        const course = await prisma.course.update({
+            where: { id },
+            data: { isLocked, lockedAt, lockedBy },
+            include: courseInclude,
+        });
+
+        await prisma.auditLog.create({
+            data: {
+                eventType,
+                actorId,
+                targetType: 'COURSE',
+                targetId: id,
+                payload: { courseId: id, isLocked },
+            },
+        });
+
+        return course;
+    }
+
     static async publish(id) {
         return prisma.course.update({
             where: { id },
             data: { status: 'PUBLISHED' },
-            include: { modules: { include: { lessons: true } } }
+            include: {
+                modules: { include: { lessons: true } },
+                ...categoryInclude,
+                ...certificateTemplateInclude,
+            }
         });
     }
-
-
 }

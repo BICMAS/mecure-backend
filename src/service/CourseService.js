@@ -1,22 +1,60 @@
 import { CourseModel } from '../models/CourseModel.js';
 import { ModuleModel } from '../models/ModuleModel.js';
+import { CourseCategoryModel } from '../models/CourseCategoryModel.js';
 import { resolveCourseImageUrl } from '../lib/courseImage.js';
 import { refreshCourseScormManifest } from '../lib/scormManifestRefresh.js';
 import { linkModulesToManifestActivities } from '../lib/modulePacing.js';
 import { resetCourseProgress } from '../lib/courseProgressReset.js';
+import { CertificateTemplateModel } from '../models/CertificateTemplateModel.js';
+import { CertificateModel } from '../models/CertificateModel.js';
+import { CertificateTemplateService } from './CertificateTemplateService.js';
+import { certificateTemplatePublicFields } from '../lib/courseCertificateTemplate.js';
+import { courseCategoryPublicFields } from '../lib/courseCategory.js';
+import {
+    formatCourseDurationFields,
+    parseDurationEstimate,
+} from '../lib/courseDuration.js';
+import {
+    buildLockUpdate,
+    buildUnlockUpdate,
+    formatCourseLockFields,
+} from '../lib/courseLock.js';
 
 export class CourseService {
+    static formatCourse(course) {
+        if (!course) return course;
+        return {
+            ...course,
+            categoryId: course.categoryId ?? course.category?.id ?? null,
+            category: courseCategoryPublicFields(course.category),
+            certificateTemplateId: course.certificateTemplateId ?? course.certificateTemplate?.id ?? null,
+            certificateTemplate: certificateTemplatePublicFields(course.certificateTemplate),
+            ...formatCourseDurationFields(course),
+            ...formatCourseLockFields(course),
+        };
+    }
+
     static async createDraft(data, creatorId) {
         if (!data.title) throw new Error('Course title required');
+        const {
+            isLocked: _isLocked,
+            lockedAt: _lockedAt,
+            lockedBy: _lockedBy,
+            locker: _locker,
+            ...safeData
+        } = data;
         const courseData = {
-            ...data,
+            ...safeData,
             status: 'DRAFT',
             tags: data.tags || null,
             visibility: data.visibility || null,
             version: data.version || null,
             createdBy: creatorId
         };
-        return await CourseModel.create(courseData);
+        if (data.durationEstimate !== undefined) {
+            courseData.durationEstimate = parseDurationEstimate(data.durationEstimate);
+        }
+        return CourseService.formatCourse(await CourseModel.create(courseData));
     }
 
     static async updateCourse(id, data, requester) {
@@ -59,6 +97,49 @@ export class CourseService {
             scormPackageId: data.scormPackageId || null,
             status: data.status || 'PUBLISHED'
         };
+
+        if (data.categoryId !== undefined) {
+            const categoryId = data.categoryId === '' || data.categoryId === null
+                ? null
+                : data.categoryId;
+            if (categoryId) {
+                const category = await CourseCategoryModel.findById(categoryId);
+                if (!category) throw new Error('Category not found');
+            }
+            updateData.categoryId = categoryId;
+        }
+
+        if (data.certificateTemplateId !== undefined) {
+            const certificateTemplateId =
+                data.certificateTemplateId === '' || data.certificateTemplateId === null
+                    ? null
+                    : data.certificateTemplateId;
+
+            if (requester.userRole === 'HR_MANAGER') {
+                if (!certificateTemplateId) throw new Error('Template ID required');
+                if (!requester.orgId) throw new Error('HR must be in an organization');
+                const assignedTemplateId = await CertificateModel.getAssignedTemplateForHR(
+                    requester.orgId,
+                    requester.id,
+                );
+                if (!assignedTemplateId) {
+                    throw new Error('No certificate template assigned to HR manager');
+                }
+                if (assignedTemplateId !== certificateTemplateId) {
+                    throw new Error('HR manager can only assign their allocated certificate template');
+                }
+            }
+
+            if (certificateTemplateId) {
+                const template = await CertificateTemplateModel.findById(certificateTemplateId);
+                if (!template) throw new Error('Certificate template not found');
+            }
+            updateData.certificateTemplateId = certificateTemplateId;
+        }
+
+        if (data.durationEstimate !== undefined) {
+            updateData.durationEstimate = parseDurationEstimate(data.durationEstimate);
+        }
 
         if (data.passingScore !== undefined) {
             const parsed = Number(data.passingScore);
@@ -113,11 +194,21 @@ export class CourseService {
 
         console.log('[COURSE SERVICE] Updating with status:', updateData.status);
 
+        const previousTemplateId = course.certificateTemplateId ?? null;
         const updated = await CourseModel.updateNested(id, updateData);
 
         await refreshCourseScormManifest(updated.id);
         await linkModulesToManifestActivities(updated.id);
-        return CourseModel.findById(updated.id);
+
+        if (
+            updateData.certificateTemplateId !== undefined &&
+            updateData.certificateTemplateId !== previousTemplateId &&
+            updateData.certificateTemplateId
+        ) {
+            await CertificateTemplateService.reissueCertificatesForCourse(id, requester.id);
+        }
+
+        return CourseService.formatCourse(await CourseModel.findById(updated.id));
     }
 
     static async publishCourse(id, data, requester) {
@@ -128,18 +219,42 @@ export class CourseService {
         }
         if (!data.modules || data.modules.length === 0) throw new Error('Course must have at least one module');
 
-        return await CourseModel.publish(id);
+        return CourseService.formatCourse(await CourseModel.publish(id));
+    }
+
+    static async lockCourse(id, requester) {
+        const course = await CourseModel.findById(id);
+        if (!course) throw new Error('Course not found');
+
+        const lockData = buildLockUpdate(requester.id);
+        return CourseService.formatCourse(await CourseModel.setLockState(id, {
+            ...lockData,
+            actorId: requester.id,
+            eventType: 'COURSE_LOCKED',
+        }));
+    }
+
+    static async unlockCourse(id, requester) {
+        const course = await CourseModel.findById(id);
+        if (!course) throw new Error('Course not found');
+
+        return CourseService.formatCourse(await CourseModel.setLockState(id, {
+            ...buildUnlockUpdate(),
+            actorId: requester.id,
+            eventType: 'COURSE_UNLOCKED',
+        }));
     }
 
     static async getCourses() {
         const courses = await CourseModel.findMany();
-        return Promise.all(courses.map(resolveCourseImageUrl));
+        const withImages = await Promise.all(courses.map(resolveCourseImageUrl));
+        return withImages.map(CourseService.formatCourse);
     }
 
     static async getCourseById(id) {
         const course = await CourseModel.findById(id);
         if (!course) throw new Error('Course not found');
-        return resolveCourseImageUrl(course);
+        return CourseService.formatCourse(await resolveCourseImageUrl(course));
     }
 
     static async deleteCourse(id, requester) {

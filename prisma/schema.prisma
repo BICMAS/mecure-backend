@@ -108,6 +108,7 @@ model User {
   streak                      Int                     @default(0)
   groupMembers                GroupMember[]
   coursesCreated              Course[]                @relation("CreatedBy")
+  coursesLocked               Course[]                @relation("CoursesLocked")
   assignmentsAssigner         Assignment[]            @relation("Assigner")
   assignmentsLearner          Assignment[]            @relation("LearnerAssignments") // FIXED: Matching name
   userAttempts                Attempt[]               @relation("UserAttempts") // FIXED: Matching name
@@ -206,6 +207,17 @@ enum CourseStatus {
   PUBLISHED
 }
 
+model CourseCategory {
+  id        String   @id @default(cuid()) @db.VarChar(25)
+  name      String   @unique
+  slug      String   @unique
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  courses   Course[]
+
+  @@map("course_categories")
+}
+
 model Course {
   id                 String        @id @default(cuid()) @db.VarChar(25)
   title              String // Required
@@ -220,9 +232,17 @@ model Course {
   createdAt          DateTime      @default(now())
   updatedAt          DateTime      @updatedAt
   scormCloudCourseId String?       @unique
+  categoryId         String?       @db.VarChar(25)
+  certificateTemplateId String?    @db.VarChar(25)
+  isLocked           Boolean       @default(false)
+  lockedAt           DateTime?
+  lockedBy           String?       @db.VarChar(25)
   modules            Module[]      @relation("CourseModules") // Named for nested
   scormPackage       ScormPackage? @relation(fields: [scormPackageId], references: [id])
   creator            User          @relation("CreatedBy", fields: [createdBy], references: [id])
+  locker             User?         @relation("CoursesLocked", fields: [lockedBy], references: [id], onDelete: SetNull)
+  category           CourseCategory? @relation(fields: [categoryId], references: [id])
+  certificateTemplate CertificateTemplate? @relation(fields: [certificateTemplateId], references: [id], onDelete: SetNull)
   assignments        Assignment[]  @relation("CourseAssignments") // FIXED: Named for matching
   attempts           Attempt[]
   certificates       Certificate[]
@@ -236,6 +256,9 @@ model Course {
 
   learnerModuleProgress LearnerModuleProgress[]
 
+  @@index([categoryId])
+  @@index([certificateTemplateId])
+  @@index([isLocked])
   @@map("courses")
 }
 
@@ -460,6 +483,7 @@ model CertificateTemplate {
   updatedAt   DateTime @updatedAt
 
   creator User @relation("CertificateTemplatesCreated", fields: [createdBy], references: [id])
+  courses Course[]
 
   @@map("certificate_templates")
 }

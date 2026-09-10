@@ -2,6 +2,7 @@ import { prisma } from '../utils/db.js';
 import { ScormCloudService } from '../services/ScormCloudService.js';
 import { computeScorePercent } from '../utils/scormScore.js';
 import { evaluateScormOutcome } from './coursePassing.js';
+import { isCourseLocked, COURSE_LOCKED_MESSAGE } from './courseLock.js';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -148,7 +149,9 @@ export async function getModuleAccessForUser(userId, courseId, now = Date.now())
     if (!course) throw new Error('Course not found');
 
     const sortedModules = sortModules(course.modules);
-    await ensureLearnerModuleProgress(userId, courseId, sortedModules, course);
+    if (!isCourseLocked(course)) {
+        await ensureLearnerModuleProgress(userId, courseId, sortedModules, course);
+    }
 
     const progressRecords = await prisma.learnerModuleProgress.findMany({
         where: { userId, courseId },
@@ -191,12 +194,16 @@ export async function getModuleAccessForUser(userId, courseId, now = Date.now())
         modulePacingEnabled: Boolean(course.modulePacingEnabled),
         pacingStartDate: course.pacingStartDate?.toISOString() ?? null,
         modulePacingDays: pacingDays,
+        isLocked: isCourseLocked(course),
         modules,
     };
 }
 
 export async function assertModuleUnlocked(userId, courseId, moduleId, now = Date.now()) {
     const access = await getModuleAccessForUser(userId, courseId, now);
+    if (access.isLocked) {
+        throw new Error(COURSE_LOCKED_MESSAGE);
+    }
     const target = access.modules.find((module) => module.moduleId === moduleId);
 
     if (!target) {
@@ -274,6 +281,7 @@ export async function syncLearnerModuleProgressFromRegistration({
     });
 
     if (!course?.modulePacingEnabled) return;
+    if (isCourseLocked(course)) return;
 
     const progressPayload = await ScormCloudService.getRegistrationProgress(
         registrationId,

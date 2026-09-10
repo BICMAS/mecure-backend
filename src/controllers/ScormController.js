@@ -5,6 +5,7 @@ import { AttemptService } from '../service/AttemptService.js';
 import { prisma } from '../utils/db.js';
 import { ScormCloudService } from '../services/ScormCloudService.js';
 import { computeScorePercent } from '../utils/scormScore.js';
+import { COURSE_LOCKED_MESSAGE } from '../lib/courseLock.js';
 
 export const uploadPackage = async (req, res) => {
     console.log('[SCORM CONTROLLER] Upload request received');
@@ -85,7 +86,7 @@ export const getLaunch = async (req, res) => {
             id,
             req.user.id,
             req.user.fullName || req.user.email,
-            req.query
+            { ...req.query, requesterRole: req.user.userRole }
         );
 
         console.log('[SCORM CONTROLLER] Launch URL generated');
@@ -98,7 +99,9 @@ export const getLaunch = async (req, res) => {
         });
     } catch (error) {
         console.error('[SCORM CONTROLLER LAUNCH ERROR]', error.message);
-        const statusCode = error.code === 'MODULE_LOCKED' ? 403 : 400;
+        const statusCode = error.code === 'MODULE_LOCKED' || error.message === COURSE_LOCKED_MESSAGE
+            ? 403
+            : 400;
         res.status(statusCode).json({
             success: false,
             error: error.message,

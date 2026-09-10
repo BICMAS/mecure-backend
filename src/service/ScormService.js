@@ -47,6 +47,7 @@ export class ScormService {
             lessonId: options.lessonId ?? null,
             moduleId: options.moduleId ?? null,
             startSco: options.startSco ?? null,
+            requesterRole: options.requesterRole ?? null,
             forceNewRegistration:
                 options.forceNewRegistration === true ||
                 options.forceNewRegistration === 'true',

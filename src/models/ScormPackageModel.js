@@ -22,6 +22,8 @@ import {
     resolveStartScoForModule,
 } from '../lib/modulePacing.js';
 import { shouldRefreshRegistrationForPackageVersion } from '../lib/scormRegistrationRefresh.js';
+import { CourseModel } from './CourseModel.js';
+import { assertLearnerCourseUnlocked } from '../lib/courseLock.js';
 
 export class ScormPackageModel {
     static getErrorMessage(error, fallback = 'SCORM launch failed') {
@@ -194,6 +196,11 @@ export class ScormPackageModel {
 
         const pkg = await this.findById(packageId);
         if (!pkg) throw new Error('Package not found');
+
+        const lockState = options.courseId
+            ? await CourseModel.findLockState(options.courseId)
+            : await CourseModel.findLockStateByScormPackageId(packageId);
+        assertLearnerCourseUnlocked(lockState, options.requesterRole);
 
         const scormCloudId = pkg.scormCloudId;
         if (!scormCloudId) throw new Error('No SCORM Cloud ID');

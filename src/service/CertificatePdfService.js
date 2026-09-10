@@ -665,7 +665,7 @@ async function generateStandardCertificate({
 }
 
 export class CertificatePdfService {
-    static async generateAndUpload({ template, traineeName, courseTitle, issuedAt }) {
+    static async generatePdfBytes({ template, traineeName, courseTitle, issuedAt }) {
         if (!template) throw new Error('Template required');
         if (!traineeName) throw new Error('Trainee name required');
         if (!courseTitle) throw new Error('Course title required');
@@ -698,10 +698,19 @@ export class CertificatePdfService {
             });
         }
 
-        const generatedBytes = await pdfDoc.save();
+        return Buffer.from(await pdfDoc.save());
+    }
+
+    static async generateAndUpload({ template, traineeName, courseTitle, issuedAt }) {
+        const generatedBytes = await CertificatePdfService.generatePdfBytes({
+            template,
+            traineeName,
+            courseTitle,
+            issuedAt,
+        });
         const filename = `${slugify(traineeName)}-${slugify(courseTitle)}-${Date.now()}.pdf`;
         const objectKey = StorageService.buildObjectKey('certificates/generated', filename);
-        await StorageService.uploadBuffer(objectKey, Buffer.from(generatedBytes), 'application/pdf');
+        await StorageService.uploadBuffer(objectKey, generatedBytes, 'application/pdf');
 
         return {
             filename,
