@@ -208,13 +208,17 @@ enum CourseStatus {
 }
 
 model CourseCategory {
-  id        String   @id @default(cuid()) @db.VarChar(25)
-  name      String   @unique
-  slug      String   @unique
-  sortOrder Int      @default(0)
-  createdAt DateTime @default(now())
-  courses   Course[]
+  id                    String               @id @default(cuid()) @db.VarChar(25)
+  name                  String               @unique
+  slug                  String               @unique
+  sortOrder             Int                  @default(0)
+  createdAt             DateTime             @default(now())
+  certificateTemplateId String?              @db.VarChar(25)
+  courses               Course[]
+  certificates          Certificate[]
+  certificateTemplate   CertificateTemplate? @relation(fields: [certificateTemplateId], references: [id], onDelete: SetNull)
 
+  @@index([certificateTemplateId])
   @@map("course_categories")
 }
 
@@ -455,20 +459,24 @@ model SuspendDatum {
   @@map("suspend_data")
 }
 
-// Certificates: Issued certs
+// Certificates: Issued certs (one per user + topic/category)
 model Certificate {
   id               String   @id @default(cuid()) @db.VarChar(25)
   userId           String   @db.VarChar(25)
-  courseId         String   @db.VarChar(25)
+  courseId         String?  @db.VarChar(25) // Optional legacy / trigger course
+  categoryId       String   @db.VarChar(25)
   templateId       String? // FK to templates if separate
   issuedAt         DateTime @default(now())
   pdfPath          String // S3 path
   verificationHash String
 
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  course Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  user     User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  course   Course?        @relation(fields: [courseId], references: [id], onDelete: SetNull)
+  category CourseCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
 
-  @@unique([userId, courseId]) // One per user/course
+  @@unique([userId, categoryId]) // One per user/topic
+  @@index([categoryId])
+  @@index([courseId])
   @@map("certificates")
 }
 
@@ -482,8 +490,9 @@ model CertificateTemplate {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  creator User @relation("CertificateTemplatesCreated", fields: [createdBy], references: [id])
-  courses Course[]
+  creator    User             @relation("CertificateTemplatesCreated", fields: [createdBy], references: [id])
+  courses    Course[]
+  categories CourseCategory[]
 
   @@map("certificate_templates")
 }

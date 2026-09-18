@@ -274,6 +274,8 @@ export const issueCertificate = async (req, res) => {
             'Course not found',
             'Certificate template not found',
             'No certificate template assigned to this course',
+            'No certificate template assigned to this topic',
+            'Course has no topic; certificates are issued per topic',
         ];
         const status = error.message === COURSE_LOCKED_MESSAGE
             ? 403
@@ -291,16 +293,58 @@ export const claimLearnerCertificate = async (req, res) => {
         const knownNotFound = [
             'Course not assigned to learner',
             'Course not found',
+            'Category not found',
+            'No certificate template assigned to this topic',
             'No certificate template assigned to this course',
             'No template assigned to course',
-            'Certificate template not found'
+            'Certificate template not found',
+            'Course has no topic; certificates are issued per topic',
         ];
-        const status = error.message === COURSE_LOCKED_MESSAGE || error.message === 'Course not yet completed'
+        const incomplete = error.message?.startsWith('Finish all courses in this topic')
+            || error.message === 'Course not yet completed'
+            || error.message === 'No courses in this topic are assigned to you'
+            || error.message === 'No courses in this topic are assigned to the learner';
+        const status = error.message === COURSE_LOCKED_MESSAGE || incomplete
             ? 403
             : knownNotFound.includes(error.message)
                 ? 404
                 : 400;
         return res.status(status).json({ error: error.message });
+    }
+};
+
+export const claimLearnerCategoryCertificate = async (req, res) => {
+    try {
+        const { categoryId } = req.params;
+        const result = await CertificateTemplateService.claimLearnerCategoryCertificate(
+            req.user.id,
+            categoryId,
+        );
+        return res.status(200).json(result);
+    } catch (error) {
+        const knownNotFound = [
+            'Category not found',
+            'No certificate template assigned to this topic',
+            'Certificate template not found',
+        ];
+        const incomplete = error.message?.startsWith('Finish all courses in this topic')
+            || error.message === 'No courses in this topic are assigned to you'
+            || error.message === 'No courses in this topic are assigned to the learner';
+        const status = error.message === COURSE_LOCKED_MESSAGE || incomplete
+            ? 403
+            : knownNotFound.includes(error.message)
+                ? 404
+                : 400;
+        return res.status(status).json({ error: error.message });
+    }
+};
+
+export const listLearnerCategoryCertificates = async (req, res) => {
+    try {
+        const topics = await CertificateTemplateService.listLearnerCategoryCertificates(req.user.id);
+        return res.status(200).json({ topics });
+    } catch (error) {
+        return res.status(400).json({ error: error.message });
     }
 };
 
@@ -322,12 +366,50 @@ export const downloadLearnerCertificate = async (req, res) => {
         const knownNotFound = [
             'Course not assigned to learner',
             'Course not found',
+            'Category not found',
+            'No certificate template assigned to this topic',
             'No certificate template assigned to this course',
             'No template assigned to course',
             'Certificate template not found',
             'Certificate file not found',
+            'Course has no topic; certificates are issued per topic',
         ];
-        const status = error.message === COURSE_LOCKED_MESSAGE || error.message === 'Course not yet completed'
+        const incomplete = error.message?.startsWith('Finish all courses in this topic')
+            || error.message === 'Course not yet completed'
+            || error.message === 'No courses in this topic are assigned to you';
+        const status = error.message === COURSE_LOCKED_MESSAGE || incomplete
+            ? 403
+            : knownNotFound.includes(error.message)
+                ? 404
+                : 400;
+        return res.status(status).json({ error: error.message });
+    }
+};
+
+export const downloadLearnerCategoryCertificate = async (req, res) => {
+    try {
+        const { categoryId } = req.params;
+        const result = await CertificateTemplateService.downloadLearnerCategoryCertificate(
+            req.user.id,
+            categoryId,
+        );
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader(
+            'Content-Disposition',
+            `attachment; filename="${result.filename}"`,
+        );
+        return res.status(200).send(result.fileBuffer);
+    } catch (error) {
+        const knownNotFound = [
+            'Category not found',
+            'No certificate template assigned to this topic',
+            'Certificate template not found',
+            'Certificate file not found',
+        ];
+        const incomplete = error.message?.startsWith('Finish all courses in this topic')
+            || error.message === 'No courses in this topic are assigned to you';
+        const status = error.message === COURSE_LOCKED_MESSAGE || incomplete
             ? 403
             : knownNotFound.includes(error.message)
                 ? 404

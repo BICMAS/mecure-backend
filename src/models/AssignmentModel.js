@@ -29,20 +29,25 @@ export class AssignmentModel {
     static async findByCourseId(courseId) {
         return prisma.assignment.findMany({
             where: { courseId },
+            orderBy: { createdAt: 'desc' },
             include: {
-                assigneeUser: { select: { id: true, fullName: true, email: true } },
-                course: {
-                    include: {
-                        category: {
-                            select: { id: true, name: true, slug: true },
-                        },
-                        certificateTemplate: {
-                            select: { id: true, filename: true, description: true },
-                        },
+                assigneeUser: {
+                    select: {
+                        id: true,
+                        fullName: true,
+                        email: true,
+                        orgId: true,
+                        department: true,
                     },
                 },
-                assigner: { select: { id: true, fullName: true } }
-            }
+                course: {
+                    select: {
+                        id: true,
+                        title: true,
+                    },
+                },
+                assigner: { select: { id: true, fullName: true } },
+            },
         });
     }
 
@@ -64,7 +69,7 @@ export class AssignmentModel {
                 course: {
                     include: {
                         category: {
-                            select: { id: true, name: true, slug: true },
+                            select: { id: true, name: true, slug: true, certificateTemplateId: true },
                         },
                         certificateTemplate: {
                             select: { id: true, filename: true, description: true },
@@ -95,7 +100,7 @@ export class AssignmentModel {
                 course: {
                     include: {
                         category: {
-                            select: { id: true, name: true, slug: true },
+                            select: { id: true, name: true, slug: true, certificateTemplateId: true },
                         },
                         certificateTemplate: {
                             select: { id: true, filename: true, description: true },
@@ -123,7 +128,7 @@ export class AssignmentModel {
                 course: {
                     include: {
                         category: {
-                            select: { id: true, name: true, slug: true },
+                            select: { id: true, name: true, slug: true, certificateTemplateId: true },
                         },
                         certificateTemplate: {
                             select: { id: true, filename: true, description: true },

@@ -4,6 +4,7 @@ import { UserModel } from '../models/UserModel.js';
 import { getAssignmentCompletionState } from '../lib/courseCompletion.js';
 import { resolveAssignmentCourseImage } from '../lib/courseImage.js';
 import { CourseService } from './CourseService.js';
+import { getCategoryCertificateStatusMap } from '../lib/categoryCertificateEligibility.js';
 
 export class AssignmentService {
     static async createAssignments(data, assigner) {
@@ -49,6 +50,7 @@ export class AssignmentService {
         }
 
         const assignments = await AssignmentModel.findByLearnerId(user.id);
+        const categoryCertificateById = await getCategoryCertificateStatusMap(user.id);
 
         const enriched = [];
         for (const assignment of assignments) {
@@ -76,11 +78,19 @@ export class AssignmentService {
             }
 
             const withImage = await resolveAssignmentCourseImage(assignment);
+            const formattedCourse = withImage.course
+                ? CourseService.formatCourse(withImage.course)
+                : withImage.course;
+            const categoryId = formattedCourse?.categoryId
+                ?? formattedCourse?.category?.id
+                ?? null;
+            const categoryCertificate = categoryId
+                ? categoryCertificateById[categoryId] ?? null
+                : null;
+
             enriched.push({
                 ...withImage,
-                course: withImage.course
-                    ? CourseService.formatCourse(withImage.course)
-                    : withImage.course,
+                course: formattedCourse,
                 isLocked: Boolean(withImage.course?.isLocked),
                 progress: Math.min(100, Math.max(0, progress)),
                 status: completionState.status,
@@ -89,10 +99,64 @@ export class AssignmentService {
                 requiresRetake: completionState.requiresRetake,
                 totalAttempts: courseAttempts.length,
                 attempts: courseAttempts,
+                categoryCertificate,
             });
         }
 
         return enriched;
+    }
+
+    /**
+     * Read-only: trainees in the HR org (or all for SUPER_ADMIN) assigned to a course.
+     */
+    static async getCourseAssignees(courseId, requester) {
+        if (!courseId) throw new Error('Course ID required');
+        if (requester.userRole !== 'HR_MANAGER' && requester.userRole !== 'SUPER_ADMIN') {
+            throw new Error('Only HR and super admin can view course assignees');
+        }
+        if (requester.userRole === 'HR_MANAGER' && !requester.orgId) {
+            throw new Error('HR must be in an organization');
+        }
+
+        const course = await CourseModel.findById(courseId);
+        if (!course) throw new Error('Course not found');
+
+        const assignments = await AssignmentModel.findByCourseId(courseId);
+        const orgScoped = requester.userRole === 'HR_MANAGER'
+            ? assignments.filter((row) => row.assigneeUser?.orgId === requester.orgId)
+            : assignments;
+
+        const assignees = [];
+        for (const assignment of orgScoped) {
+            const learner = assignment.assigneeUser;
+            if (!learner) continue;
+
+            const completionState = await getAssignmentCompletionState(
+                learner.id,
+                courseId,
+            );
+
+            assignees.push({
+                assignmentId: assignment.id,
+                learnerId: learner.id,
+                fullName: learner.fullName,
+                email: learner.email,
+                department: learner.department ?? null,
+                assignedAt: assignment.createdAt,
+                dueDate: assignment.dueDate ?? null,
+                status: completionState.status,
+                progress: Math.min(100, Math.max(0, completionState.progress ?? 0)),
+                scorePercent: completionState.scorePercent ?? null,
+                requiresRetake: Boolean(completionState.requiresRetake),
+            });
+        }
+
+        return {
+            courseId: course.id,
+            courseTitle: course.title,
+            count: assignees.length,
+            assignees,
+        };
     }
 
 }

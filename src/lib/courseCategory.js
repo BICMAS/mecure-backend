@@ -42,6 +42,7 @@ export function categorySelect() {
         name: true,
         slug: true,
         sortOrder: true,
+        certificateTemplateId: true,
     };
 }
 

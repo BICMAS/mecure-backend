@@ -13,6 +13,12 @@ import {
     SAMPLE_CERTIFICATE_PREVIEW,
 } from '../lib/certificateTemplatePreview.js';
 import { assertLearnerCourseUnlocked } from '../lib/courseLock.js';
+import {
+    getCategoryCertificateEligibility,
+    getCategoryCertificateStatusMap,
+    resolveTemplateIdForCategory,
+} from '../lib/categoryCertificateEligibility.js';
+import { prisma } from '../utils/db.js';
 
 const ALLOWED_LOGO_MIME_TYPES = new Set([
     'image/png',
@@ -287,25 +293,46 @@ export class CertificateTemplateService {
         };
     }
 
-    static async resolveTemplateIdForIssuance({ courseId }) {
+    static async resolveTemplateIdForIssuance({ courseId, categoryId = null }) {
+        if (categoryId) {
+            const fromCategory = await resolveTemplateIdForCategory(categoryId);
+            if (fromCategory) return fromCategory;
+        }
+
+        if (!courseId) return null;
+
         const course = await CourseModel.findById(courseId);
+        if (course?.categoryId) {
+            const fromCategory = await resolveTemplateIdForCategory(course.categoryId);
+            if (fromCategory) return fromCategory;
+        }
+
         const courseTemplateId = course?.certificateTemplateId
             ?? await CertificateModel.getAssignedTemplateForCourse(courseId);
 
         return resolveIssuanceTemplateId({ courseTemplateId });
     }
 
-    static async reissueCertificate({ certificate, user, course, templateId, issuerId }) {
+    static async reissueCertificate({ certificate, user, course, category, templateId, issuerId }) {
         if (!certificate) throw new Error('Certificate not found');
         if (!user) throw new Error('User not found');
-        if (!course) throw new Error('Course not found');
 
-        const resolvedTemplateId = templateId ?? await CertificateTemplateService.resolveTemplateIdForIssuance({
-            courseId: course.id,
-            user,
-        });
+        const resolvedCategory = category
+            ?? (certificate.categoryId
+                ? await prisma.courseCategory.findUnique({ where: { id: certificate.categoryId } })
+                : null);
+
+        if (!resolvedCategory) {
+            throw new Error('Certificate category not found');
+        }
+
+        const resolvedTemplateId = templateId
+            ?? await CertificateTemplateService.resolveTemplateIdForIssuance({
+                courseId: course?.id ?? certificate.courseId,
+                categoryId: resolvedCategory.id,
+            });
         if (!resolvedTemplateId) {
-            throw new Error('No certificate template assigned to this course');
+            throw new Error('No certificate template assigned to this topic');
         }
 
         const template = await CertificateTemplateModel.findById(resolvedTemplateId);
@@ -314,7 +341,7 @@ export class CertificateTemplateService {
         const generatedPdf = await CertificatePdfService.generateAndUpload({
             template,
             traineeName: user.fullName,
-            courseTitle: course.title,
+            courseTitle: resolvedCategory.name,
             issuedAt: certificate.issuedAt || new Date(),
         });
 
@@ -329,41 +356,46 @@ export class CertificateTemplateService {
         };
     }
 
-    static async ensureCertificateCurrent({ learnerId, courseId, issuerId }) {
-        const existing = await CertificateModel.findCertificateByUserAndCourse(learnerId, courseId);
+    static async ensureCertificateCurrent({ learnerId, categoryId, issuerId }) {
+        const existing = await CertificateModel.findCertificateByUserAndCategory(
+            learnerId,
+            categoryId,
+        );
         if (!existing) {
             return { certificate: null, reissued: false };
         }
 
-        const [user, course] = await Promise.all([
+        const [user, category] = await Promise.all([
             UserModel.findById(learnerId),
-            CourseModel.findById(courseId),
+            prisma.courseCategory.findUnique({ where: { id: categoryId } }),
         ]);
-        if (!user) throw new Error('User not found');
-        if (!course) throw new Error('Course not found');
+        if (!user || !category) {
+            return {
+                certificate: await CertificateTemplateService.formatCertificateForClient(existing),
+                reissued: false,
+            };
+        }
 
         const resolvedTemplateId = await CertificateTemplateService.resolveTemplateIdForIssuance({
-            courseId,
-            user,
+            categoryId,
+            courseId: existing.courseId,
         });
-        if (!resolvedTemplateId) {
+        if (!resolvedTemplateId || existing.templateId === resolvedTemplateId) {
             return {
                 certificate: await CertificateTemplateService.formatCertificateForClient(existing),
                 reissued: false,
             };
         }
 
-        if (existing.templateId === resolvedTemplateId) {
-            return {
-                certificate: await CertificateTemplateService.formatCertificateForClient(existing),
-                reissued: false,
-            };
-        }
+        const course = existing.courseId
+            ? await CourseModel.findById(existing.courseId)
+            : null;
 
         const reissued = await CertificateTemplateService.reissueCertificate({
             certificate: existing,
             user,
             course,
+            category,
             templateId: resolvedTemplateId,
             issuerId,
         });
@@ -382,7 +414,7 @@ export class CertificateTemplateService {
             try {
                 const resolvedTemplateId = await CertificateTemplateService.resolveTemplateIdForIssuance({
                     courseId: certificate.courseId,
-                    user: certificate.user,
+                    categoryId: certificate.categoryId,
                 });
 
                 if (!resolvedTemplateId || certificate.templateId === resolvedTemplateId) {
@@ -393,6 +425,7 @@ export class CertificateTemplateService {
                     certificate,
                     user: certificate.user,
                     course: certificate.course,
+                    category: certificate.category,
                     templateId: resolvedTemplateId,
                     issuerId: actorId,
                 });
@@ -402,6 +435,7 @@ export class CertificateTemplateService {
                     certificateId: certificate.id,
                     userId: certificate.userId,
                     courseId: certificate.courseId,
+                    categoryId: certificate.categoryId,
                     error: error.message,
                 });
             }
@@ -413,7 +447,10 @@ export class CertificateTemplateService {
     static async reissueCertificatesForCourse(courseId, actorId) {
         if (!courseId) throw new Error('Course ID required');
 
-        const certificates = await CertificateModel.findCertificatesByCourseId(courseId);
+        const course = await CourseModel.findById(courseId);
+        const certificates = course?.categoryId
+            ? await CertificateModel.findCertificatesByCategoryId(course.categoryId)
+            : await CertificateModel.findCertificatesByCourseId(courseId);
         let reissuedCount = 0;
         const errors = [];
 
@@ -421,7 +458,7 @@ export class CertificateTemplateService {
             try {
                 const resolvedTemplateId = await CertificateTemplateService.resolveTemplateIdForIssuance({
                     courseId,
-                    user: certificate.user,
+                    categoryId: certificate.categoryId ?? course?.categoryId,
                 });
 
                 if (!resolvedTemplateId || certificate.templateId === resolvedTemplateId) {
@@ -431,7 +468,8 @@ export class CertificateTemplateService {
                 await CertificateTemplateService.reissueCertificate({
                     certificate,
                     user: certificate.user,
-                    course: certificate.course,
+                    course: certificate.course ?? course,
+                    category: certificate.category,
                     templateId: resolvedTemplateId,
                     issuerId: actorId,
                 });
@@ -441,6 +479,7 @@ export class CertificateTemplateService {
                     certificateId: certificate.id,
                     userId: certificate.userId,
                     courseId: certificate.courseId,
+                    categoryId: certificate.categoryId,
                     error: error.message,
                 });
             }
@@ -449,6 +488,10 @@ export class CertificateTemplateService {
         return { reissuedCount, errors };
     }
 
+    /**
+     * HR manual issue — left available but gated on full topic completion
+     * when the course belongs to a category (same rules as learner claim).
+     */
     static async issueCertificate({ userId, courseId, issuerId, templateId, requester }) {
         if (!userId) throw new Error('User ID required');
         if (!courseId) throw new Error('Course ID required');
@@ -456,10 +499,13 @@ export class CertificateTemplateService {
 
         const [user, course] = await Promise.all([
             UserModel.findById(userId),
-            CourseModel.findById(courseId)
+            CourseModel.findById(courseId),
         ]);
         if (!user) throw new Error('User not found');
         if (!course) throw new Error('Course not found');
+        if (!course.categoryId) {
+            throw new Error('Course has no topic; certificates are issued per topic');
+        }
         assertLearnerCourseUnlocked(course, requester?.userRole);
         if (requester?.userRole === 'HR_MANAGER') {
             if (!requester.orgId) throw new Error('HR must be in an organization');
@@ -468,43 +514,180 @@ export class CertificateTemplateService {
             }
         }
 
-        const resolvedTemplateId = await CertificateTemplateService.resolveTemplateIdForIssuance({
-            courseId,
+        return CertificateTemplateService.issueCategoryCertificate({
+            userId,
+            categoryId: course.categoryId,
+            triggerCourseId: courseId,
+            issuerId,
             templateId,
-            user,
+            requester,
+            skipEligibilityCheck: false,
         });
+    }
+
+    static async issueCategoryCertificate({
+        userId,
+        categoryId,
+        triggerCourseId = null,
+        issuerId,
+        templateId = null,
+        requester = null,
+        skipEligibilityCheck = false,
+    }) {
+        if (!userId) throw new Error('User ID required');
+        if (!categoryId) throw new Error('Category ID required');
+        if (!issuerId) throw new Error('Issuer ID required');
+
+        const user = await UserModel.findById(userId);
+        if (!user) throw new Error('User not found');
+
+        const eligibility = await getCategoryCertificateEligibility(userId, categoryId);
+        if (!skipEligibilityCheck && !eligibility.eligible) {
+            if (eligibility.assignedCount === 0) {
+                throw new Error('No courses in this topic are assigned to the learner');
+            }
+            throw new Error(
+                `Finish all courses in this topic first (${eligibility.completedCount}/${eligibility.assignedCount} complete)`,
+            );
+        }
+
+        const lockedCourse = eligibility.courseStates.find((row) => row.isLocked);
+        if (lockedCourse && requester?.userRole === 'LEARNER') {
+            assertLearnerCourseUnlocked({ isLocked: true }, 'LEARNER');
+        }
+
+        if (requester?.userRole === 'HR_MANAGER') {
+            if (!requester.orgId) throw new Error('HR must be in an organization');
+            if (user.orgId !== requester.orgId) {
+                throw new Error('HR manager can only issue certificates to learners in their organization');
+            }
+        }
+
+        const resolvedTemplateId = templateId
+            || eligibility.templateId
+            || await CertificateTemplateService.resolveTemplateIdForIssuance({ categoryId });
         if (!resolvedTemplateId) {
-            throw new Error('No certificate template assigned to this course');
+            throw new Error('No certificate template assigned to this topic');
         }
 
         const template = await CertificateTemplateModel.findById(resolvedTemplateId);
         if (!template) throw new Error('Certificate template not found');
 
-        const existing = await CertificateModel.findCertificateByUserAndCourse(userId, courseId);
-        if (existing) throw new Error('Certificate already issued for this user and course');
+        const existing = await CertificateModel.findCertificateByUserAndCategory(userId, categoryId);
+        if (existing) {
+            throw new Error('Certificate already issued for this user and topic');
+        }
 
         const issuedAt = new Date();
         const generatedPdf = await CertificatePdfService.generateAndUpload({
             template,
             traineeName: user.fullName,
-            courseTitle: course.title,
-            issuedAt
+            courseTitle: eligibility.category.name,
+            issuedAt,
         });
 
         const certificate = await CertificateModel.createCertificate({
             userId,
-            courseId,
+            categoryId,
+            courseId: triggerCourseId,
             templateId: resolvedTemplateId,
             pdfPath: generatedPdf.blobUrl,
-            issuedAt
+            issuedAt,
         });
 
         return {
             ...(await CertificateTemplateService.formatCertificateForClient(certificate)),
             issuedBy: issuerId,
+            categoryId,
+            categoryName: eligibility.category.name,
         };
     }
 
+    static async listLearnerCategoryCertificates(learnerId) {
+        if (!learnerId) throw new Error('Learner ID required');
+        const statusMap = await getCategoryCertificateStatusMap(learnerId);
+        const topics = Object.values(statusMap).sort((a, b) =>
+            String(a.categoryName).localeCompare(String(b.categoryName), undefined, {
+                sensitivity: 'base',
+            }),
+        );
+
+        const withUrls = await Promise.all(
+            topics.map(async (topic) => {
+                if (!topic.certificateId) return topic;
+                const cert = await CertificateModel.findCertificateById(topic.certificateId);
+                const formatted = await CertificateTemplateService.formatCertificateForClient(cert);
+                return {
+                    ...topic,
+                    certificate: formatted,
+                    certificateUrl: formatted?.certificateUrl ?? null,
+                };
+            }),
+        );
+
+        return withUrls;
+    }
+
+    static async claimLearnerCategoryCertificate(learnerId, categoryId) {
+        if (!learnerId) throw new Error('Learner ID required');
+        if (!categoryId) throw new Error('Category ID required');
+
+        const eligibility = await getCategoryCertificateEligibility(learnerId, categoryId);
+        if (!eligibility.eligible) {
+            if (eligibility.assignedCount === 0) {
+                throw new Error('No courses in this topic are assigned to you');
+            }
+            throw new Error(
+                `Finish all courses in this topic first (${eligibility.completedCount}/${eligibility.assignedCount} complete)`,
+            );
+        }
+
+        const existing = await CertificateModel.findCertificateByUserAndCategory(
+            learnerId,
+            categoryId,
+        );
+        if (existing) {
+            const current = await CertificateTemplateService.ensureCertificateCurrent({
+                learnerId,
+                categoryId,
+                issuerId: learnerId,
+            });
+
+            return {
+                certificate: {
+                    ...current.certificate,
+                    categoryId,
+                    categoryName: eligibility.category.name,
+                },
+                issued: false,
+                reissued: current.reissued,
+                categoryId,
+                categoryName: eligibility.category.name,
+            };
+        }
+
+        const triggerCourseId = eligibility.courseStates[eligibility.courseStates.length - 1]?.courseId
+            ?? null;
+
+        const created = await CertificateTemplateService.issueCategoryCertificate({
+            userId: learnerId,
+            categoryId,
+            triggerCourseId,
+            issuerId: learnerId,
+            requester: { userRole: 'LEARNER' },
+            skipEligibilityCheck: true,
+        });
+
+        return {
+            certificate: created,
+            issued: true,
+            reissued: false,
+            categoryId,
+            categoryName: eligibility.category.name,
+        };
+    }
+
+    /** Course route stays as a thin wrapper → category certificate. */
     static async claimLearnerCertificate(learnerId, courseId) {
         if (!learnerId) throw new Error('Learner ID required');
         if (!courseId) throw new Error('Course ID required');
@@ -516,47 +699,36 @@ export class CertificateTemplateService {
 
         const course = await CourseModel.findById(courseId);
         if (!course) throw new Error('Course not found');
+        if (!course.categoryId) {
+            throw new Error('Course has no topic; certificates are issued per topic');
+        }
 
         const completionState = await getAssignmentCompletionState(learnerId, courseId);
         if (!completionState.complete || !completionState.passed) {
             if (completionState.requiresRetake) {
-                throw new Error(`Quiz not passed. Minimum score is ${completionState.passingScore}%. Please retake the course.`);
+                throw new Error(
+                    `Quiz not passed. Minimum score is ${completionState.passingScore}%. Please retake the course.`,
+                );
             }
             throw new Error('Course not yet completed');
         }
 
-        const existing = await CertificateModel.findCertificateByUserAndCourse(learnerId, courseId);
-        if (existing) {
-            const current = await CertificateTemplateService.ensureCertificateCurrent({
-                learnerId,
-                courseId,
-                issuerId: learnerId,
-            });
-
-            return {
-                certificate: current.certificate,
-                issued: false,
-                reissued: current.reissued,
-            };
-        }
-
         assertLearnerCourseUnlocked(course, 'LEARNER');
 
-        const created = await this.issueCertificate({
-            userId: learnerId,
-            courseId,
-            issuerId: learnerId,
-            requester: { userRole: 'LEARNER' }
-        });
-
-        return { certificate: created, issued: true, reissued: false };
+        return CertificateTemplateService.claimLearnerCategoryCertificate(
+            learnerId,
+            course.categoryId,
+        );
     }
 
-    static async downloadLearnerCertificate(learnerId, courseId) {
-        const claimResult = await this.claimLearnerCertificate(learnerId, courseId);
-        const storedCertificate = await CertificateModel.findCertificateByUserAndCourse(
+    static async downloadLearnerCategoryCertificate(learnerId, categoryId) {
+        const claimResult = await CertificateTemplateService.claimLearnerCategoryCertificate(
             learnerId,
-            courseId,
+            categoryId,
+        );
+        const storedCertificate = await CertificateModel.findCertificateByUserAndCategory(
+            learnerId,
+            categoryId,
         );
 
         if (!storedCertificate?.pdfPath) {
@@ -564,12 +736,32 @@ export class CertificateTemplateService {
         }
 
         const fileBuffer = await StorageService.getObjectBuffer(storedCertificate.pdfPath);
+        const slug = String(claimResult.categoryName || categoryId)
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-+|-+$/g, '')
+            .slice(0, 60);
 
         return {
             fileBuffer,
-            filename: `certificate-${courseId}.pdf`,
+            filename: `certificate-${slug || categoryId}.pdf`,
             certificate: claimResult.certificate,
             issued: claimResult.issued,
+            categoryId,
+            categoryName: claimResult.categoryName,
         };
+    }
+
+    static async downloadLearnerCertificate(learnerId, courseId) {
+        const course = await CourseModel.findById(courseId);
+        if (!course) throw new Error('Course not found');
+        if (!course.categoryId) {
+            throw new Error('Course has no topic; certificates are issued per topic');
+        }
+
+        return CertificateTemplateService.downloadLearnerCategoryCertificate(
+            learnerId,
+            course.categoryId,
+        );
     }
 }

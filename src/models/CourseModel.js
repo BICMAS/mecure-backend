@@ -7,7 +7,7 @@ import {
 
 const categoryInclude = {
     category: {
-        select: { id: true, name: true, slug: true },
+        select: { id: true, name: true, slug: true, certificateTemplateId: true },
     },
 };
 

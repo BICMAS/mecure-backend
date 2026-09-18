@@ -15,7 +15,7 @@
     "test:smoke": "node scripts/smoke-test.js",
     "test:modules": "node scripts/test-module-upsert.js",
     "test:categories": "node scripts/test-course-category.js",
-    "test:certificates": "node scripts/test-course-certificate-template.js",
+    "test:certificates": "node scripts/test-course-certificate-template.js && node scripts/test-category-certificate.js",
     "test:lock": "node scripts/test-course-lock.js",
     "test:duration": "node scripts/test-course-duration.js",
     "test:template-preview": "node scripts/test-certificate-template-preview.js",
