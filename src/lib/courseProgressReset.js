@@ -86,9 +86,45 @@ async function loadAssignedLearnerIds(courseId, requester) {
     return [...learnerIds];
 }
 
+/**
+ * Topic certificates are unique on (userId, categoryId).
+ * Courses without a category fall back to a courseId match.
+ */
+export function buildCertificateResetQuery({ userId, courseId, categoryId }) {
+    if (categoryId) {
+        return {
+            method: 'findUnique',
+            where: {
+                userId_categoryId: { userId, categoryId },
+            },
+        };
+    }
+
+    return {
+        method: 'findFirst',
+        where: { userId, courseId },
+    };
+}
+
+export async function findCertificateForCourseReset({ userId, courseId, categoryId }) {
+    const query = buildCertificateResetQuery({ userId, courseId, categoryId });
+    if (query.method === 'findUnique') {
+        return prisma.certificate.findUnique({
+            where: query.where,
+            select: { id: true, categoryId: true, courseId: true },
+        });
+    }
+
+    return prisma.certificate.findFirst({
+        where: query.where,
+        select: { id: true, categoryId: true, courseId: true },
+    });
+}
+
 async function countLearnerResetImpact({
     userId,
     courseId,
+    categoryId,
     packageIds,
     deleteCertificates,
     resetModuleProgress,
@@ -96,10 +132,7 @@ async function countLearnerResetImpact({
 }) {
     const [certificate, scormAttempts] = await Promise.all([
         deleteCertificates
-            ? prisma.certificate.findUnique({
-                where: { userId_courseId: { userId, courseId } },
-                select: { id: true },
-            })
+            ? findCertificateForCourseReset({ userId, courseId, categoryId })
             : Promise.resolve(null),
         packageIds.length > 0
             ? prisma.scormAttempt.count({
@@ -134,6 +167,7 @@ async function resetLearnerProgress({
         return countLearnerResetImpact({
             userId,
             courseId,
+            categoryId: course.categoryId ?? null,
             packageIds,
             deleteCertificates,
             resetModuleProgress,
@@ -146,8 +180,10 @@ async function resetLearnerProgress({
     let moduleProgressReset = 0;
 
     if (deleteCertificates) {
-        const certificate = await prisma.certificate.findUnique({
-            where: { userId_courseId: { userId, courseId } },
+        const certificate = await findCertificateForCourseReset({
+            userId,
+            courseId,
+            categoryId: course.categoryId ?? null,
         });
 
         if (certificate) {
