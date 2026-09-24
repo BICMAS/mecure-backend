@@ -79,6 +79,18 @@ export class UserModel {
         });
     }
 
+    static async findLearnersByBatchIds(batchIds, orgId) {
+        if (!Array.isArray(batchIds) || batchIds.length === 0 || !orgId) return [];
+        return prisma.user.findMany({
+            where: {
+                batchId: { in: batchIds },
+                orgId,
+                userRole: 'LEARNER',
+            },
+            select: { id: true, batchId: true, orgId: true, userRole: true },
+        });
+    }
+
     static async findManyByIds(ids) {
         if (!Array.isArray(ids) || ids.length === 0) return [];
         return prisma.user.findMany({

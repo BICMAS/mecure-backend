@@ -51,6 +51,18 @@ export class AssignmentModel {
         });
     }
 
+    static async findAssigneeIdsForCourse(courseId, learnerIds) {
+        if (!Array.isArray(learnerIds) || learnerIds.length === 0) return [];
+        const rows = await prisma.assignment.findMany({
+            where: {
+                courseId,
+                assigneeUserId: { in: learnerIds },
+            },
+            select: { assigneeUserId: true },
+        });
+        return rows.map((row) => row.assigneeUserId).filter(Boolean);
+    }
+
     static async findByCourseAndLearner(courseId, learnerId) {
         return prisma.assignment.findFirst({
             where: {

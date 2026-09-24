@@ -1,6 +1,9 @@
 import { AssignmentModel } from '../models/AssignmentModel.js';
 import { CourseModel } from '../models/CourseModel.js';
 import { UserModel } from '../models/UserModel.js';
+import { BatchModel } from '../models/BatchModel.js';
+import { assertBatchAssignable } from './BatchService.js';
+import { planBatchCourseAssignment } from '../lib/batchAssignment.js';
 import { getAssignmentCompletionState } from '../lib/courseCompletion.js';
 import { resolveAssignmentCourseImage } from '../lib/courseImage.js';
 import { CourseService } from './CourseService.js';
@@ -8,40 +11,62 @@ import { getCategoryCertificateStatusMap } from '../lib/categoryCertificateEligi
 
 export class AssignmentService {
     static async createAssignments(data, assigner) {
-        const { courseId, learnerIds, dueDate, reminder } = data;
+        const { courseId, batchIds, dueDate, reminder } = data;
 
-        // Validate required
         if (!courseId) throw new Error('Course ID required');
-        if (!learnerIds || !Array.isArray(learnerIds) || learnerIds.length === 0) throw new Error('Learner IDs array required');
+        if (!batchIds || !Array.isArray(batchIds) || batchIds.length === 0) {
+            throw new Error('Select at least one batch');
+        }
 
-        // Validate course
         const course = await CourseModel.findById(courseId);
         if (!course) throw new Error('Course not found');
         if (course.status !== 'PUBLISHED') throw new Error('Only published courses can be assigned');
 
-        // Validate assigner
         if (assigner.userRole !== 'HR_MANAGER' && assigner.userRole !== 'SUPER_ADMIN') {
             throw new Error('Only HR and super admin can assign courses');
         }
-
-        // Validate learners
-        const learners = await UserModel.findManyByIds(learnerIds);
-        if (learners.length !== learnerIds.length) throw new Error('Some learners not found');
-        if (assigner.userRole === 'HR_MANAGER') {
-            const invalid = learners.filter(l => l.orgId !== assigner.orgId);
-            if (invalid.length > 0) throw new Error('HR can only assign to org learners');
+        if (!assigner.orgId) {
+            throw new Error('No organization found for user');
         }
 
-        // Create assignments
-        const assignments = await AssignmentModel.createMany(learnerIds.map(learnerId => ({
-            courseId,
-            assignerId: assigner.id,
-            assigneeUserId: learnerId,
-            dueDate,
-            recurrenceRule: reminder
-        })));
+        const uniqueBatchIds = [...new Set(batchIds.map((id) => String(id)))];
+        const batches = [];
+        for (const batchId of uniqueBatchIds) {
+            const batch = await BatchModel.findById(batchId);
+            assertBatchAssignable(batch, assigner.orgId);
+            batches.push(batch);
+        }
 
-        return assignments;
+        const learners = await UserModel.findLearnersByBatchIds(uniqueBatchIds, assigner.orgId);
+        const existingAssigneeIds = await AssignmentModel.findAssigneeIdsForCourse(
+            courseId,
+            learners.map((learner) => learner.id),
+        );
+        const plan = planBatchCourseAssignment({
+            batches,
+            learners,
+            existingAssigneeIds,
+        });
+
+        if (plan.toAssign.length === 0 && plan.skipped.length === 0) {
+            throw new Error('This batch has no learners');
+        }
+
+        const assignments = plan.toAssign.length === 0
+            ? []
+            : await AssignmentModel.createMany(plan.toAssign.map((learnerId) => ({
+                courseId,
+                assignerId: assigner.id,
+                assigneeUserId: learnerId,
+                dueDate,
+                recurrenceRule: reminder,
+            })));
+
+        return {
+            assigned: plan.toAssign.length,
+            skipped: plan.skipped.length,
+            assignments,
+        };
     }
 
     static async getAssignedCourses(user) {
