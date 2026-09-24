@@ -5,6 +5,7 @@ import courseRouter from './courseRoutes.js';
 import courseCategoryRouter from './courseCategoryRoutes.js';
 import scormRouter from './scormRoutes.js';
 import groupRouter from './groupRoutes.js';
+import batchRouter from './batchRoutes.js';
 import assignmentRouter from './assignmentRoutes.js';
 import dashboardRouter from './dashboardRoutes.js';
 import learningPathRouter from './learningPathRoute.js';
@@ -23,6 +24,7 @@ const router = Router();
 router.use('/auth', authRouter);
 router.use('/users', userRouter);
 router.use('/groups', groupRouter);
+router.use('/batches', batchRouter);
 router.use('/courses', courseRouter);
 router.use('/course-categories', courseCategoryRouter);
 router.use('/scorm-packages', scormRouter)

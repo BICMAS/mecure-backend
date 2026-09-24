@@ -3,7 +3,9 @@ import multer from 'multer';
 import csv from 'csv-parser';
 import fs from 'fs';
 
-const upload = multer({ dest: 'uploads/' });
+const uploadDir = 'uploads';
+fs.mkdirSync(uploadDir, { recursive: true });
+const upload = multer({ dest: uploadDir });
 
 export const getAllUsers = async (req, res) => {
     try {
@@ -105,17 +107,28 @@ export const deleteUser = async (req, res) => {
 export const bulkUpload = (req, res) => {
     upload.single('csv')(req, res, async (err) => {
         if (err) return res.status(400).json({ error: 'File upload failed' });
+        if (!req.file) return res.status(400).json({ error: 'CSV file is required' });
+
         const results = [];
-        fs.createReadStream(req.file.path)
+        const stream = fs.createReadStream(req.file.path);
+        stream
             .pipe(csv())
             .on('data', (data) => results.push(data))
+            .on('error', (error) => {
+                fs.unlink(req.file.path, () => {});
+                if (!res.headersSent) {
+                    res.status(400).json({ error: error.message || 'Could not read CSV file' });
+                }
+            })
             .on('end', async () => {
-                fs.unlinkSync(req.file.path);  // Clean up
+                fs.unlink(req.file.path, () => {});
                 try {
                     const result = await UserService.bulkUpload(results, req.user);
                     res.json(result);
                 } catch (error) {
-                    res.status(400).json({ error: error.message });
+                    if (!res.headersSent) {
+                        res.status(400).json({ error: error.message });
+                    }
                 }
             });
     });

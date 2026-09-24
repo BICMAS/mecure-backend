@@ -99,7 +99,9 @@ model User {
   updatedAt                   DateTime                @updatedAt
   orgId                       String?                 @db.VarChar(25)
   groupId                     String?                 @db.VarChar(25)
+  batchId                     String?                 @db.VarChar(25)
   organization                Organization?           @relation("UserInOrg", fields: [orgId], references: [id])
+  batch                       Batch?                  @relation(fields: [batchId], references: [id], onDelete: SetNull)
   createdOrgs                 Organization[]          @relation("CreatedBy")
   learningPathsCreated        LearningPath[]          @relation("LearningPathsCreated")
   learningPathEnrolments      LearningPathEnrolment[]
@@ -124,6 +126,7 @@ model User {
   coinAwards                  CoinAward[]
   learnerModuleProgress       LearnerModuleProgress[]
 
+  @@index([batchId])
   @@map("users")
 }
 
@@ -135,6 +138,7 @@ model Organization {
   createdAt DateTime  @default(now())
   status    OrgStatus @default(ACTIVE)
   users     User[]    @relation("UserInOrg")
+  batches   Batch[]
   creator   User      @relation("CreatedBy", fields: [createdBy], references: [id])
 
   @@map("organizations")
@@ -174,6 +178,20 @@ model WebPushSubscription {
 
   @@index([userId])
   @@map("web_push_subscriptions")
+}
+
+model Batch {
+  id        String   @id @default(cuid()) @db.VarChar(25)
+  orgId     String   @db.VarChar(25)
+  name      String
+  createdAt DateTime @default(now())
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  users        User[]
+
+  @@unique([orgId, name])
+  @@index([orgId])
+  @@map("batches")
 }
 
 model Group {

@@ -1,5 +1,6 @@
 import { UserModel } from '../models/UserModel.js';
 import { OrganizationModel } from '../models/OrganizationModel.js';
+import { BatchService } from './BatchService.js';
 import bcrypt from 'bcryptjs';
 
 /** Trim and treat blank strings as null. */
@@ -10,6 +11,18 @@ const normalizeOptionalContact = (value) => {
 };
 
 const normalizeOptionalText = normalizeOptionalContact;
+
+const DEPARTMENTS = new Set([
+    'HR',
+    'SALES',
+    'MARKETING',
+    'FINANCE',
+    'OPERATIONS',
+    'IT',
+    'CUSTOMER_SUPPORT',
+    'LEGAL',
+    'ADMINISTRATION',
+]);
 
 export class UserService {
     static sanitizeUser(user) {
@@ -114,6 +127,7 @@ export class UserService {
         }
 
         const hashedPassword = await bcrypt.hash(password, 12);
+        const batchId = await BatchService.resolveBatchId(data.batchId, orgId);
         const user = await UserModel.create({
             fullName,
             email,
@@ -124,6 +138,7 @@ export class UserService {
             userRole,
             password: hashedPassword,
             orgId,
+            batchId,
             status: 'ACTIVE',
             authProvider: 'LOCAL'
         });
@@ -182,6 +197,9 @@ export class UserService {
             ];
 
         const data = {};
+        if (Object.prototype.hasOwnProperty.call(updates, 'batchId')) {
+            data.batchId = await BatchService.resolveBatchId(updates.batchId, existing.orgId);
+        }
         for (const key of allowedFields) {
             if (Object.prototype.hasOwnProperty.call(updates, key)) {
                 if (key === 'email' || key === 'phoneNumber' || key === 'designation') {
@@ -273,7 +291,12 @@ export class UserService {
             const fullName = row.fullName || row.full_name || row.name;
             const email = normalizeOptionalContact(row.email);
             const password = row.password || row.temporaryPassword;
-            const department = row.department;
+            const department = String(row.department ?? '').trim().toUpperCase();
+            if (!DEPARTMENTS.has(department)) {
+                throw new Error(
+                    `Row ${index + 1}: department must be one of ${[...DEPARTMENTS].join(', ')}`,
+                );
+            }
             const userRole = row.userRole || row.user_role || 'LEARNER';
             const username = row.username || null;
             const phoneNumber = normalizeOptionalContact(

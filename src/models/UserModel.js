@@ -10,7 +10,13 @@ export class UserModel {
     }
 
     static async update(id, updates) {
-        return prisma.user.update({ where: { id }, data: updates });
+        return prisma.user.update({
+            where: { id },
+            data: updates,
+            include: {
+                batch: { select: { id: true, name: true } },
+            },
+        });
     }
 
     static async deleteById(id) {
@@ -39,6 +45,8 @@ export class UserModel {
                 designation: true,
                 phoneNumber: true,
                 metadata: true,
+                batchId: true,
+                batch: { select: { id: true, name: true } },
             }
         });
     }
@@ -63,7 +71,12 @@ export class UserModel {
     }
 
     static async create(data) {
-        return prisma.user.create({ data });
+        return prisma.user.create({
+            data,
+            include: {
+                batch: { select: { id: true, name: true } },
+            },
+        });
     }
 
     static async findManyByIds(ids) {
@@ -76,7 +89,12 @@ export class UserModel {
 
     static async findByOrgId(orgId) {
         console.log(`[MODEL] Finding users by orgId: ${orgId}`);
-        return prisma.user.findMany({ where: { orgId } });
+        return prisma.user.findMany({
+            where: { orgId },
+            include: {
+                batch: { select: { id: true, name: true } },
+            },
+        });
     }
 
     static async findLearnersByOrgId(orgId) {
