@@ -302,6 +302,7 @@ export class CourseService {
         return resetCourseProgress({
             courseId,
             requester,
+            batchIds: options.batchIds,
             deleteCertificates: options.deleteCertificates !== false,
             resetModuleProgress: options.resetModuleProgress !== false,
             newPacingStartDate: options.newPacingStartDate,

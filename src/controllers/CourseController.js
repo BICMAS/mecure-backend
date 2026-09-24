@@ -103,6 +103,7 @@ export const resetCourseProgress = async (req, res) => {
             deleteCertificates = true,
             resetModuleProgress = true,
             newPacingStartDate,
+            batchIds,
         } = req.body ?? {};
 
         const result = await CourseService.resetCourseProgress(
@@ -111,6 +112,7 @@ export const resetCourseProgress = async (req, res) => {
                 deleteCertificates,
                 resetModuleProgress,
                 newPacingStartDate,
+                batchIds,
                 dryRun,
             },
             req.user,

@@ -1,5 +1,7 @@
 import { prisma } from '../utils/db.js';
 import { getCourseScormPackageIds } from './courseCompletion.js';
+import { BatchModel } from '../models/BatchModel.js';
+import { assertBatchAssignable } from '../service/BatchService.js';
 
 function sortModules(modules = []) {
     return [...modules].sort((a, b) => {
@@ -34,11 +36,40 @@ async function loadCourseForReset(courseId) {
     return course;
 }
 
-async function loadAssignedLearnerIds(courseId, requester) {
+async function resolveResetBatchIds(batchIds, requester) {
+    if (batchIds == null) {
+        return null;
+    }
+    if (!Array.isArray(batchIds) || batchIds.length === 0) {
+        throw new Error('Select at least one batch');
+    }
+    if (!requester?.orgId) {
+        throw new Error('No organization found for user');
+    }
+
+    const uniqueIds = [...new Set(batchIds.map((id) => String(id)))];
+    const resolved = [];
+    for (const batchId of uniqueIds) {
+        const batch = await BatchModel.findById(batchId);
+        resolved.push(assertBatchAssignable(batch, requester.orgId));
+    }
+    return resolved;
+}
+
+async function loadAssignedLearnerIds(courseId, requester, batchIds) {
+    const scopedBatchIds = await resolveResetBatchIds(batchIds, requester);
     const assignments = await prisma.assignment.findMany({
         where: {
             courseId,
             assigneeUserId: { not: null },
+            ...(scopedBatchIds
+                ? {
+                    assigneeUser: {
+                        orgId: requester.orgId,
+                        batchId: { in: scopedBatchIds },
+                    },
+                }
+                : {}),
         },
         select: {
             assigneeUserId: true,
@@ -72,7 +103,11 @@ async function loadAssignedLearnerIds(courseId, requester) {
         learnerIds.add(learner.id);
     }
 
-    if (requester.userRole === 'HR_MANAGER' && learnerIds.size === 0) {
+    if (scopedBatchIds && learnerIds.size === 0) {
+        throw new Error('This batch has no learners assigned to this course');
+    }
+
+    if (!scopedBatchIds && requester.userRole === 'HR_MANAGER' && learnerIds.size === 0) {
         const hasForeignAssignments = assignments.some(
             (assignment) =>
                 assignment.assigneeUser?.orgId
@@ -279,19 +314,21 @@ async function resetLearnerProgress({
 }
 
 /**
- * Reset all assigned learners on a course to 0% after a SCORM reload/publish.
+ * Reset assigned learners on a course to 0% after a SCORM reload/publish.
+ * When batchIds is set, only learners in those batches are reset.
  * Run AFTER the updated SCORM package is published so the next launch uses fresh registrations.
  */
 export async function resetCourseProgress({
     courseId,
     requester,
+    batchIds,
     deleteCertificates = true,
     resetModuleProgress = true,
     newPacingStartDate,
     dryRun = false,
 }) {
     const course = await loadCourseForReset(courseId);
-    const learnerIds = await loadAssignedLearnerIds(courseId, requester);
+    const learnerIds = await loadAssignedLearnerIds(courseId, requester, batchIds);
     const packageIds = await getCourseScormPackageIds(courseId);
 
     const summary = {
