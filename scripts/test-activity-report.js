@@ -73,6 +73,46 @@ function testBuilderAndCsv() {
     assert.match(lines[0], /Trainee,Email,Batch,Department,Assigned courses/);
     assert.match(csv, /Ada,ada@example.com,Batch A,SALES,1,40,80,1.5,1,1\/1,1,1,1,1,12,5,Planning \(40%\)/);
     assert.match(csv, /Bola/);
+
+    assert.equal(report.analytics.summary.learners, 2);
+    assert.equal(report.analytics.summary.learningHours, 1.5);
+    assert.equal(report.analytics.summary.comparison.learningHours, 1.5);
+    assert.deepEqual(report.analytics.funnel, { assigned: 2, started: 1, completed: 0, passed: 0 });
+    assert.deepEqual(report.analytics.courses.map((row) => row.title), ['Planning']);
+    assert.deepEqual(report.analytics.atRisk.map((row) => row.fullName), ['Ada', 'Bola']);
+    assert.equal(report.analytics.atRisk[0].reason, 'Overdue courses');
+
+    const batchOnly = buildActivityReport({
+        learners: [
+            { id: 'a', fullName: 'Ada', email: 'ada@example.com', department: 'SALES', points: 12, batchName: 'Batch A' },
+        ],
+        assignments: [
+            { userId: 'a', courseId: 'course-1', courseTitle: 'Planning', dueDate: new Date('2026-01-10T00:00:00.000Z'), createdAt: new Date('2026-01-02T00:00:00.000Z') },
+        ],
+        attempts: [
+            { userId: 'a', courseId: 'course-1', status: 'IN_PROGRESS', completionPercentage: 40, scorePercent: 80, learningHours: 1.5, updatedAt: new Date('2026-01-05T00:00:00.000Z') },
+        ],
+        filters,
+        now: new Date('2026-02-01T00:00:00.000Z'),
+    });
+    assert.deepEqual(batchOnly.analytics.atRisk.map((row) => row.fullName), ['Ada']);
+    assert.equal(batchOnly.analytics.summary.learners, 1);
+    assert.equal(batchOnly.analytics.funnel.assigned, 1);
+    assert.equal(batchOnly.trainees.some((row) => row.fullName === 'Bola'), false);
+
+    const openEnded = buildActivityReport({
+        learners: [
+            { id: 'a', fullName: 'Ada', email: 'ada@example.com', department: 'SALES', points: 12, batchName: 'Batch A' },
+        ],
+        filters: { ...filters, from: null, to: null },
+        now: new Date('2026-02-01T00:00:00.000Z'),
+    });
+    assert.equal(openEnded.analytics.summary.comparison, null);
+
+    const empty = buildActivityReport({ learners: [], filters, now: new Date('2026-02-01T00:00:00.000Z') });
+    assert.equal(empty.message, 'No trainees match these filters.');
+    assert.equal(empty.trainees.length, 0);
+    assert.equal(empty.analytics.atRisk.length, 0);
 }
 
 async function testOrgScope() {
@@ -172,6 +212,10 @@ async function testOrgScope() {
         assert.equal(batchAReport.trainees[0].averageProgress, 40);
         assert.equal(batchAReport.trainees[0].overdueCourses, 1);
         assert.equal(batchAReport.breakdownBy, 'department');
+        assert.equal(batchAReport.analytics.summary.comparison, null);
+        assert.equal(batchAReport.analytics.summary.learners, batchAReport.trainees.length);
+        assert.ok(batchAReport.analytics.atRisk.every((row) => row.fullName === 'Activity Report A'));
+        assert.equal(batchAReport.analytics.funnel.assigned, batchAReport.totals.assignedCourses);
 
         const names = (report) => report.trainees.map((row) => row.fullName);
         assert.equal(names(batchAReport).includes('Activity Report B'), false);

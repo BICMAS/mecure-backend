@@ -110,11 +110,19 @@ function emptyTotals() {
     };
 }
 
+function rate(part, whole) {
+    if (!whole) return 0;
+    return round2((part / whole) * 100);
+}
+
 function sumTotals(trainees) {
     const totals = emptyTotals();
     totals.trainees = trainees.length;
     const progressValues = [];
     const scoreValues = [];
+    let startedCourses = 0;
+    let completedCourses = 0;
+    let passedCourses = 0;
 
     for (const trainee of trainees) {
         totals.assignedCourses += trainee.assignedCourses;
@@ -128,12 +136,20 @@ function sumTotals(trainees) {
         totals.fieldTasks += trainee.fieldTasks;
         totals.points += trainee.points;
         totals.pointsAwarded += trainee.pointsAwarded;
+        startedCourses += trainee.startedCourses || 0;
+        completedCourses += trainee.completedCourses || 0;
+        passedCourses += trainee.passedCourses || 0;
         if (trainee.attemptCount > 0) progressValues.push(trainee.averageProgress);
         if (trainee.averageScore != null) scoreValues.push(trainee.averageScore);
     }
 
     totals.averageProgress = average(progressValues) ?? 0;
     totals.averageScore = average(scoreValues);
+    totals.startedCourses = startedCourses;
+    totals.completedCourses = completedCourses;
+    totals.passedCourses = passedCourses;
+    totals.completionRate = rate(completedCourses, totals.assignedCourses);
+    totals.passRate = rate(passedCourses, totals.assignedCourses);
     return totals;
 }
 
@@ -172,8 +188,329 @@ export function buildActivityReport({
     const from = filters?.from ?? null;
     const to = filters?.to ?? null;
     const breakdown = filters?.breakdown === 'department' ? 'department' : 'batch';
-    const learnerIds = new Set(learners.map((learner) => learner.id));
+    const trainees = buildTraineeRows({
+        learners,
+        assignments,
+        attempts,
+        moduleProgress,
+        scormAttempts,
+        certificates,
+        quizAttempts,
+        fieldTasks,
+        coinAwards,
+        from,
+        to,
+        now,
+    });
 
+    const totals = sumTotals(trainees);
+    const analytics = buildAnalytics({
+        learners,
+        trainees,
+        totals,
+        assignments,
+        attempts,
+        moduleProgress,
+        scormAttempts,
+        certificates,
+        quizAttempts,
+        fieldTasks,
+        from,
+        to,
+        now,
+    });
+
+    return {
+        breakdownBy: breakdown,
+        totals,
+        breakdown: buildBreakdown(trainees, breakdown),
+        trainees,
+        analytics,
+        message: trainees.length === 0 ? 'No trainees match these filters.' : null,
+    };
+}
+
+const INACTIVE_MS = 14 * 24 * 60 * 60 * 1000;
+
+function timestamp(value) {
+    if (!value) return null;
+    const time = new Date(value).getTime();
+    return Number.isNaN(time) ? null : time;
+}
+
+function monthKey(value) {
+    const date = new Date(value);
+    return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+function monthLabel(key) {
+    const [year, month] = key.split('-').map(Number);
+    return new Date(Date.UTC(year, month - 1, 1)).toLocaleString('en-US', {
+        month: 'short',
+        year: 'numeric',
+        timeZone: 'UTC',
+    });
+}
+
+function monthsInRange(from, to) {
+    const keys = [];
+    const cursor = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), 1));
+    const end = Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), 1);
+    while (cursor.getTime() <= end) {
+        keys.push(monthKey(cursor));
+        cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+    }
+    return keys;
+}
+
+function previousWindow(from, to) {
+    if (!from || !to) return null;
+    const length = to.getTime() - from.getTime();
+    const prevTo = new Date(from.getTime() - 1);
+    const prevFrom = new Date(prevTo.getTime() - length);
+    return { from: prevFrom, to: prevTo };
+}
+
+function indexTimes(rows, idKey, timeKey) {
+    const times = new Map();
+    for (const row of rows) {
+        const id = row[idKey];
+        const time = timestamp(row[timeKey]);
+        if (!id || time == null) continue;
+        const current = times.get(id) || [];
+        current.push(time);
+        times.set(id, current);
+    }
+    return times;
+}
+
+function lastActivityBefore(timesByUser, userId, reference) {
+    const times = timesByUser.get(userId) || [];
+    const limit = reference.getTime();
+    let latest = null;
+    for (const time of times) {
+        if (time <= limit && (latest == null || time > latest)) latest = time;
+    }
+    return latest;
+}
+
+function riskForTrainee(trainee, lastActivity, reference) {
+    const inactive = lastActivity == null || (reference.getTime() - lastActivity) >= INACTIVE_MS;
+    const daysInactive = lastActivity == null
+        ? null
+        : Math.floor((reference.getTime() - lastActivity) / (24 * 60 * 60 * 1000));
+    const lowProgress = (trainee.assignedCourses > 0 || trainee.attemptCount > 0)
+        && trainee.averageProgress < 20;
+
+    if (trainee.overdueCourses > 0) {
+        return { reason: 'Overdue courses', daysInactive };
+    }
+    if (lowProgress) {
+        return { reason: 'Progress under 20%', daysInactive };
+    }
+    if (inactive) {
+        return { reason: 'No activity in 14 days', daysInactive };
+    }
+    return null;
+}
+
+function atRiskTrainees(trainees, timesByUser, reference) {
+    return trainees.flatMap((trainee) => {
+        const risk = riskForTrainee(
+            trainee,
+            lastActivityBefore(timesByUser, trainee.id, reference),
+            reference,
+        );
+        if (!risk) return [];
+        return [{
+            id: trainee.id,
+            fullName: trainee.fullName,
+            batch: trainee.batch,
+            department: trainee.department,
+            reason: risk.reason,
+            daysInactive: risk.daysInactive,
+        }];
+    });
+}
+
+function courseRows(trainees, assignments, attempts, from, to) {
+    const learnerIds = new Set(trainees.map((trainee) => trainee.id));
+    const courses = new Map();
+
+    for (const assignment of assignments) {
+        if (!learnerIds.has(assignment.userId) || !inRange(assignment.createdAt, from, to)) continue;
+        const title = assignment.courseTitle || 'Course';
+        const course = courses.get(title) || { title, assigned: 0, completed: 0, scores: [] };
+        course.assigned += 1;
+        const attempt = attempts.find((row) => (
+            row.userId === assignment.userId
+            && row.courseId === assignment.courseId
+            && inRange(row.updatedAt, from, to)
+        ));
+        if (attempt && COMPLETED_STATUSES.has(attempt.status)) course.completed += 1;
+        if (attempt && attempt.scorePercent != null && Number.isFinite(Number(attempt.scorePercent))) {
+            course.scores.push(Number(attempt.scorePercent));
+        }
+        courses.set(title, course);
+    }
+
+    return [...courses.values()]
+        .map((course) => ({
+            title: course.title,
+            assigned: course.assigned,
+            completionRate: rate(course.completed, course.assigned),
+            averageScore: average(course.scores),
+        }))
+        .sort((a, b) => a.title.localeCompare(b.title));
+}
+
+function trendRows(trainees, attempts, from, to) {
+    const learnerIds = new Set(trainees.map((trainee) => trainee.id));
+    const buckets = new Map();
+    const ensure = (key) => {
+        const bucket = buckets.get(key) || {
+            month: key,
+            label: monthLabel(key),
+            learners: new Set(),
+            learningHours: 0,
+            progress: [],
+        };
+        buckets.set(key, bucket);
+        return bucket;
+    };
+
+    if (from && to) {
+        for (const key of monthsInRange(from, to)) ensure(key);
+    }
+
+    for (const attempt of attempts) {
+        if (!learnerIds.has(attempt.userId) || !inRange(attempt.updatedAt, from, to) || !attempt.updatedAt) {
+            continue;
+        }
+        const bucket = ensure(monthKey(attempt.updatedAt));
+        bucket.learners.add(attempt.userId);
+        bucket.learningHours = round2(bucket.learningHours + (Number(attempt.learningHours) || 0));
+        bucket.progress.push(Number(attempt.completionPercentage) || 0);
+    }
+
+    return [...buckets.values()]
+        .sort((a, b) => a.month.localeCompare(b.month))
+        .map((bucket) => ({
+            month: bucket.month,
+            label: bucket.label,
+            activeLearners: bucket.learners.size,
+            learningHours: bucket.learningHours,
+            averageProgress: average(bucket.progress) ?? 0,
+        }));
+}
+
+function summaryFrom(trainees, atRiskCount) {
+    const totals = sumTotals(trainees);
+    return {
+        learners: trainees.length,
+        averageProgress: totals.averageProgress,
+        completionRate: totals.completionRate,
+        passRate: totals.passRate,
+        learningHours: totals.learningHours,
+        atRisk: atRiskCount,
+    };
+}
+
+function summaryDelta(current, previous) {
+    return {
+        learners: round2(current.learners - previous.learners),
+        averageProgress: round2(current.averageProgress - previous.averageProgress),
+        completionRate: round2(current.completionRate - previous.completionRate),
+        passRate: round2(current.passRate - previous.passRate),
+        learningHours: round2(current.learningHours - previous.learningHours),
+        atRisk: round2(current.atRisk - previous.atRisk),
+    };
+}
+
+function buildAnalytics({
+    learners,
+    trainees,
+    totals,
+    assignments,
+    attempts,
+    moduleProgress,
+    scormAttempts,
+    certificates,
+    quizAttempts,
+    fieldTasks,
+    from,
+    to,
+    now,
+}) {
+    const timesByUser = new Map();
+    const addTimes = (rows, idKey, timeKey) => {
+        const indexed = indexTimes(rows, idKey, timeKey);
+        for (const [id, values] of indexed) {
+            const current = timesByUser.get(id) || [];
+            current.push(...values);
+            timesByUser.set(id, current);
+        }
+    };
+    addTimes(assignments, 'userId', 'createdAt');
+    addTimes(attempts, 'userId', 'updatedAt');
+    addTimes(moduleProgress, 'userId', 'updatedAt');
+    addTimes(scormAttempts, 'userId', 'updatedAt');
+    addTimes(certificates, 'userId', 'issuedAt');
+    addTimes(quizAttempts, 'userId', 'createdAt');
+    addTimes(fieldTasks, 'userId', 'createdAt');
+
+    const atRisk = atRiskTrainees(trainees, timesByUser, now);
+    const summary = summaryFrom(trainees, atRisk.length);
+    const previous = previousWindow(from, to);
+    let comparison = null;
+    if (previous) {
+        const previousTrainees = buildTraineeRows({
+            learners,
+            assignments,
+            attempts,
+            moduleProgress,
+            scormAttempts,
+            certificates,
+            quizAttempts,
+            fieldTasks,
+            coinAwards: [],
+            from: previous.from,
+            to: previous.to,
+            now: previous.to,
+        });
+        const previousRisk = atRiskTrainees(previousTrainees, timesByUser, previous.to);
+        comparison = summaryDelta(summary, summaryFrom(previousTrainees, previousRisk.length));
+    }
+
+    return {
+        summary: { ...summary, comparison },
+        funnel: {
+            assigned: totals.assignedCourses,
+            started: totals.startedCourses,
+            completed: totals.completedCourses,
+            passed: totals.passedCourses,
+        },
+        courses: courseRows(trainees, assignments, attempts, from, to),
+        atRisk,
+        trend: trendRows(trainees, attempts, from, to),
+    };
+}
+
+function buildTraineeRows({
+    learners = [],
+    assignments = [],
+    attempts = [],
+    moduleProgress = [],
+    scormAttempts = [],
+    certificates = [],
+    quizAttempts = [],
+    fieldTasks = [],
+    coinAwards = [],
+    from = null,
+    to = null,
+    now = new Date(),
+}) {
+    const learnerIds = new Set(learners.map((learner) => learner.id));
     const completedKeys = new Set();
     for (const attempt of attempts) {
         if (!learnerIds.has(attempt.userId)) continue;
@@ -182,7 +519,7 @@ export function buildActivityReport({
         }
     }
 
-    const trainees = learners
+    return learners
         .map((learner) => {
             const learnerAssignments = assignments.filter((row) => row.userId === learner.id);
             const countedAssignments = learnerAssignments.filter((row) => inRange(row.createdAt, from, to));
@@ -202,8 +539,20 @@ export function buildActivityReport({
                 if (!inRange(due, from, to)) return false;
                 return !completedKeys.has(`${learner.id}:${row.courseId}`);
             }).length;
+            let startedCourses = 0;
+            let completedCourses = 0;
+            let passedCourses = 0;
             const courseParts = countedAssignments.map((row) => {
                 const attempt = learnerAttempts.find((item) => item.courseId === row.courseId);
+                if (attempt && (attempt.status !== 'NOT_STARTED' || Number(attempt.completionPercentage) > 0)) {
+                    startedCourses += 1;
+                }
+                if (attempt && COMPLETED_STATUSES.has(attempt.status)) {
+                    completedCourses += 1;
+                }
+                if (attempt && attempt.status === 'PASSED') {
+                    passedCourses += 1;
+                }
                 const progress = attempt ? `${Math.round(Number(attempt.completionPercentage) || 0)}%` : 'Not started';
                 return `${row.courseTitle || 'Course'} (${progress})`;
             });
@@ -232,17 +581,12 @@ export function buildActivityReport({
                     .reduce((sum, row) => sum + (Number(row.points) || 0), 0),
                 courses: courseParts.join('; '),
                 attemptCount: learnerAttempts.length,
+                startedCourses,
+                completedCourses,
+                passedCourses,
             };
         })
         .sort((a, b) => a.fullName.localeCompare(b.fullName));
-
-    return {
-        breakdownBy: breakdown,
-        totals: sumTotals(trainees),
-        breakdown: buildBreakdown(trainees, breakdown),
-        trainees,
-        message: trainees.length === 0 ? 'No trainees match these filters.' : null,
-    };
 }
 
 function csvCell(value) {
