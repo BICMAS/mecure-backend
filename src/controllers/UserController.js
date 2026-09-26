@@ -7,6 +7,15 @@ const uploadDir = 'uploads';
 fs.mkdirSync(uploadDir, { recursive: true });
 const upload = multer({ dest: uploadDir });
 
+export const listOrganizations = async (req, res) => {
+    try {
+        const organizations = await UserService.listOrganizations(req.user);
+        res.json(organizations);
+    } catch (error) {
+        res.status(403).json({ error: error.message });
+    }
+};
+
 export const getAllUsers = async (req, res) => {
     try {
         const users = await UserService.getAllUsers(req.user);

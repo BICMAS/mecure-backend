@@ -48,6 +48,13 @@ export class UserService {
         }
     }
 
+    static async listOrganizations(requester) {
+        if (requester?.userRole !== 'SUPER_ADMIN') {
+            throw new Error('Insufficient role to view organizations');
+        }
+        return OrganizationModel.listSummaries();
+    }
+
     static async getCurrentOrgUsers(requester) {
         const timestamp = new Date().toISOString();
         console.log(`[ORG SVC START] ${timestamp} - Role: ${requester.userRole}, orgId: ${requester.orgId}`);
@@ -102,11 +109,20 @@ export class UserService {
         let orgId = null;
         if (creator.userRole === 'SUPER_ADMIN') {
             if (userRole === 'HR_MANAGER') {
-                const org = await OrganizationModel.create({
-                    name: `Org for ${fullName}`,
-                    createdBy: creator.id
-                });
-                orgId = org.id;
+                const requestedOrgId = typeof data.orgId === 'string' ? data.orgId.trim() : '';
+                if (requestedOrgId) {
+                    const existingOrg = await OrganizationModel.findSummaryById(requestedOrgId);
+                    if (!existingOrg) {
+                        throw new Error('Organization not found');
+                    }
+                    orgId = existingOrg.id;
+                } else {
+                    const org = await OrganizationModel.create({
+                        name: `Org for ${fullName}`,
+                        createdBy: creator.id
+                    });
+                    orgId = org.id;
+                }
             }
         } else if (creator.userRole === 'HR_MANAGER') {
             if (!creator.orgId) throw new Error('HR must be in an organization');

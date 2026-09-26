@@ -1,4 +1,5 @@
 import { DashboardService, HRCourseTrackingService, LearnerDashboardService } from '../service/DashboardService.js';
+import { ActivityReportService } from '../service/ActivityReportService.js';
 import { authenticateToken, requireRole } from '../middleware/authMiddleware.js';
 
 export const getHRDashboard = async (req, res) => {
@@ -40,6 +41,26 @@ export const getLearnerCourseTracking = async (req, res) => {
         return res.json(result);
     } catch (error) {
         const status = error.message === 'Learner not found' ? 404 : 403;
+        return res.status(status).json({ error: error.message });
+    }
+};
+
+export const getHrActivityReport = async (req, res) => {
+    try {
+        if (req.query.format === 'csv') {
+            const csv = await ActivityReportService.getReportCsv(req.user, req.query);
+            res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+            res.setHeader('Content-Disposition', 'attachment; filename="activity-report.csv"');
+            return res.send(csv);
+        }
+
+        const result = await ActivityReportService.getReport(req.user, req.query);
+        return res.json(result);
+    } catch (error) {
+        const status = error.message === 'HR must be in an organization'
+            || error.message === 'Insufficient role to view the activity report'
+            ? 403
+            : 400;
         return res.status(status).json({ error: error.message });
     }
 };

@@ -30,6 +30,29 @@ export class OrganizationModel {
         });
     }
 
+    static async findSummaryById(id) {
+        return prisma.organization.findUnique({
+            where: { id },
+            select: { id: true, name: true },
+        });
+    }
+
+    static async listSummaries() {
+        return prisma.organization.findMany({
+            select: {
+                id: true,
+                name: true,
+                users: {
+                    where: { userRole: 'HR_MANAGER' },
+                    select: { fullName: true, email: true },
+                    orderBy: { fullName: 'asc' },
+                    take: 3,
+                },
+            },
+            orderBy: { name: 'asc' },
+        });
+    }
+
     // Fetch a single organization by ID
     static async findById(id) {
         return prisma.organization.findUnique({
