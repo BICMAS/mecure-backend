@@ -16,6 +16,7 @@ import {
 } from '../lib/coursePassing.js';
 import { getCourseScormPackageIds, getAssignmentCompletionState, repairStaleCourseAttemptIfNeeded } from '../lib/courseCompletion.js';
 import { syncLearnerModuleProgressFromRegistration } from '../lib/modulePacing.js';
+import { fetchScormRegistrationReport, persistScormRegistrationReport } from '../lib/scormRegistrationReport.js';
 import { CourseModel } from '../models/CourseModel.js';
 import { assertLearnerCourseUnlocked } from '../lib/courseLock.js';
 
@@ -207,6 +208,18 @@ export class AttemptService {
             if (passingConfig.courseId) {
                 await repairStaleCourseAttemptIfNeeded(updated.userId, passingConfig.courseId);
             }
+        }
+
+        try {
+            const reportPayload = await fetchScormRegistrationReport(registrationId, ScormCloudService);
+            await persistScormRegistrationReport(prisma, {
+                scormAttemptId,
+                registration,
+                progress: reportPayload.progress,
+                launches: reportPayload.launches,
+            });
+        } catch (error) {
+            console.error('[SCORM REPORT] persist failed:', error instanceof Error ? error.message : error);
         }
 
         return buildSyncResponse(updated, outcome);

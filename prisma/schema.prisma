@@ -436,18 +436,113 @@ model ScormAttempt {
   scormCloudLastSyncAt     DateTime?
   scormCloudCompletion     Float?
   scormCloudScoreScaled    Float?
+  firstAccessAt            DateTime?
+  lastAccessAt             DateTime?
+  completedAt              DateTime?
+  registrationCompletion   String?
+  registrationSuccess      String?
   createdAt                DateTime      @default(now())
   updatedAt                DateTime      @updatedAt
 
-  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  scormPackage ScormPackage @relation(fields: [scormPackageId], references: [id], onDelete: Cascade)
-  attempt      Attempt?     @relation(fields: [attemptId], references: [id], onDelete: SetNull)
+  user         User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scormPackage ScormPackage            @relation(fields: [scormPackageId], references: [id], onDelete: Cascade)
+  attempt      Attempt?                @relation(fields: [attemptId], references: [id], onDelete: SetNull)
+  activities   ScormActivityResult[]
+  interactions ScormInteractionResult[]
+  objectives   ScormObjectiveResult[]
+  comments     ScormLearnerComment[]
+  launches     ScormLaunch[]
 
   @@unique([userId, scormPackageId])
   @@index([userId])
   @@index([scormPackageId])
   @@index([attemptId])
   @@map("scorm_attempts")
+}
+
+model ScormActivityResult {
+  id                 String   @id @default(cuid()) @db.VarChar(25)
+  scormAttemptId     String   @db.VarChar(25)
+  activityId         String
+  title              String
+  completion         String?
+  success            String?
+  scorePercent       Float?
+  timeTrackedSeconds Float?
+  updatedAt          DateTime @updatedAt
+
+  scormAttempt ScormAttempt @relation(fields: [scormAttemptId], references: [id], onDelete: Cascade)
+
+  @@unique([scormAttemptId, activityId])
+  @@index([scormAttemptId])
+  @@map("scorm_activity_results")
+}
+
+model ScormInteractionResult {
+  id              String  @id @default(cuid()) @db.VarChar(25)
+  scormAttemptId  String  @db.VarChar(25)
+  activityId      String  @default("")
+  interactionId   String
+  interactionType String?
+  description     String?
+  learnerResponse Json?
+  correctResponse Json?
+  result          String?
+  weighting       Float?
+  latency         String?
+
+  scormAttempt ScormAttempt @relation(fields: [scormAttemptId], references: [id], onDelete: Cascade)
+
+  @@unique([scormAttemptId, activityId, interactionId])
+  @@index([scormAttemptId])
+  @@map("scorm_interaction_results")
+}
+
+model ScormObjectiveResult {
+  id             String  @id @default(cuid()) @db.VarChar(25)
+  scormAttemptId String  @db.VarChar(25)
+  activityId     String  @default("")
+  objectiveId    String
+  success        String?
+  completion     String?
+  scorePercent   Float?
+
+  scormAttempt ScormAttempt @relation(fields: [scormAttemptId], references: [id], onDelete: Cascade)
+
+  @@unique([scormAttemptId, activityId, objectiveId])
+  @@index([scormAttemptId])
+  @@map("scorm_objective_results")
+}
+
+model ScormLearnerComment {
+  id             String    @id @default(cuid()) @db.VarChar(25)
+  scormAttemptId String    @db.VarChar(25)
+  activityId     String    @default("")
+  commentIndex   Int
+  comment        String
+  location       String?
+  commentedAt    DateTime?
+
+  scormAttempt ScormAttempt @relation(fields: [scormAttemptId], references: [id], onDelete: Cascade)
+
+  @@unique([scormAttemptId, activityId, commentIndex])
+  @@index([scormAttemptId])
+  @@map("scorm_learner_comments")
+}
+
+model ScormLaunch {
+  id              String   @id @default(cuid()) @db.VarChar(25)
+  scormAttemptId  String   @db.VarChar(25)
+  externalId      String
+  launchedAt      DateTime
+  durationSeconds Float?
+  createdAt       DateTime @default(now())
+
+  scormAttempt ScormAttempt @relation(fields: [scormAttemptId], references: [id], onDelete: Cascade)
+
+  @@unique([scormAttemptId, externalId])
+  @@index([scormAttemptId])
+  @@map("scorm_launches")
 }
 
 // Interactions: SCORM interactions (consider separate table per type if volume high; here as flat for simplicity)

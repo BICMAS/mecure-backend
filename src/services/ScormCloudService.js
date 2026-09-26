@@ -284,9 +284,21 @@ export class ScormCloudService {
         if (options.includeChildResults) {
             params.set('includeChildResults', 'true');
         }
+        if (options.includeRuntime) {
+            params.set('includeRuntime', 'true');
+        }
+        if (options.includeInteractionsAndObjectives) {
+            params.set('includeInteractionsAndObjectives', 'true');
+        }
         const query = params.toString();
         const url = `/registrations/${registrationId}/progress${query ? `?${query}` : ''}`;
         const res = await client.get(url);
+        return res.data;
+    }
+
+    static async getRegistrationLaunchHistory(registrationId) {
+        const client = this.init();
+        const res = await client.get(`/registrations/${registrationId}/launchHistory`);
         return res.data;
     }
 

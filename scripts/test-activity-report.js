@@ -81,6 +81,10 @@ function testBuilderAndCsv() {
     assert.deepEqual(report.analytics.courses.map((row) => row.title), ['Planning']);
     assert.deepEqual(report.analytics.atRisk.map((row) => row.fullName), ['Ada', 'Bola']);
     assert.equal(report.analytics.atRisk[0].reason, 'Overdue courses');
+    assert.equal(report.analytics.summary.completionRate, 0);
+    assert.deepEqual(report.analytics.scorm.scoreBands, { under50: 0, from50to79: 0, from80: 1 });
+    assert.equal(report.analytics.scorm.interactions.rows.length, 0);
+    assert.equal(report.analytics.funnel.completed, 0);
 
     const batchOnly = buildActivityReport({
         learners: [
@@ -92,10 +96,53 @@ function testBuilderAndCsv() {
         attempts: [
             { userId: 'a', courseId: 'course-1', status: 'IN_PROGRESS', completionPercentage: 40, scorePercent: 80, learningHours: 1.5, updatedAt: new Date('2026-01-05T00:00:00.000Z') },
         ],
+        scormRegistrations: [
+            {
+                id: 'reg-a',
+                userId: 'a',
+                courseTitle: 'Planning',
+                completion: 'INCOMPLETE',
+                success: null,
+                scorePercent: 80,
+                learningHours: 1.5,
+                firstAccessAt: new Date('2026-01-02T00:00:00.000Z'),
+                lastAccessAt: new Date('2026-01-05T00:00:00.000Z'),
+                updatedAt: new Date('2026-01-05T00:00:00.000Z'),
+                activities: [{ activityId: 'sco-1', title: 'Intro', completion: 'INCOMPLETE', success: null, scorePercent: 80, timeTrackedSeconds: 5400 }],
+                interactions: [],
+                objectives: [],
+                comments: [],
+                launches: [{ launchedAt: new Date('2026-01-05T00:00:00.000Z'), durationSeconds: 600 }],
+            },
+            {
+                id: 'reg-b',
+                userId: 'b',
+                courseTitle: 'Planning',
+                completion: 'UNKNOWN',
+                success: null,
+                scorePercent: null,
+                learningHours: null,
+                firstAccessAt: null,
+                lastAccessAt: new Date('2026-01-06T00:00:00.000Z'),
+                updatedAt: new Date('2026-01-06T00:00:00.000Z'),
+                activities: [{ activityId: 'sco-b', title: 'Other batch', completion: 'INCOMPLETE', success: null, scorePercent: null, timeTrackedSeconds: 10 }],
+                interactions: [{ interactionId: 'q-b', description: 'Other question', result: 'incorrect', weighting: 1, activityId: 'sco-b' }],
+                objectives: [],
+                comments: [],
+                launches: [{ launchedAt: new Date('2026-01-06T00:00:00.000Z'), durationSeconds: 30 }],
+            },
+        ],
         filters,
         now: new Date('2026-02-01T00:00:00.000Z'),
     });
     assert.deepEqual(batchOnly.analytics.atRisk.map((row) => row.fullName), ['Ada']);
+    assert.deepEqual(batchOnly.analytics.scorm.registrations.map((row) => row.fullName), ['Ada']);
+    assert.deepEqual(batchOnly.analytics.scorm.activities.map((row) => row.title), ['Intro']);
+    assert.equal(batchOnly.analytics.scorm.interactions.rows.length, 0);
+    assert.equal(batchOnly.analytics.scorm.launches.count, 1);
+    assert.deepEqual(batchOnly.analytics.scorm.scoreBands, { under50: 0, from50to79: 0, from80: 1 });
+    assert.equal(batchOnly.analytics.summary.completionRate, 0);
+    assert.equal(batchOnly.analytics.funnel.assigned, 1);
     assert.equal(batchOnly.analytics.summary.learners, 1);
     assert.equal(batchOnly.analytics.funnel.assigned, 1);
     assert.equal(batchOnly.trainees.some((row) => row.fullName === 'Bola'), false);
@@ -216,6 +263,15 @@ async function testOrgScope() {
         assert.equal(batchAReport.analytics.summary.learners, batchAReport.trainees.length);
         assert.ok(batchAReport.analytics.atRisk.every((row) => row.fullName === 'Activity Report A'));
         assert.equal(batchAReport.analytics.funnel.assigned, batchAReport.totals.assignedCourses);
+        assert.equal(batchAReport.analytics.summary.completionRate, batchAReport.totals.completionRate);
+        assert.ok(batchAReport.analytics.scorm.registrations.every((row) => row.fullName === 'Activity Report A'));
+        assert.equal(batchAReport.analytics.scorm.interactions.rows.length, 0);
+        assert.equal(
+            batchAReport.analytics.scorm.scoreBands.under50
+            + batchAReport.analytics.scorm.scoreBands.from50to79
+            + batchAReport.analytics.scorm.scoreBands.from80,
+            0,
+        );
 
         const names = (report) => report.trainees.map((row) => row.fullName);
         assert.equal(names(batchAReport).includes('Activity Report B'), false);
@@ -264,6 +320,9 @@ async function testOrgScope() {
         });
         assert.deepEqual(noMatch.trainees, []);
         assert.equal(noMatch.message, 'No trainees match these filters.');
+        assert.equal(noMatch.analytics.scorm.registrations.length, 0);
+        assert.equal(noMatch.analytics.scorm.interactions.rows.length, 0);
+        assert.equal(noMatch.analytics.scorm.launches.count, 0);
     } finally {
         if (courseId) {
             await prisma.attempt.deleteMany({ where: { courseId } });

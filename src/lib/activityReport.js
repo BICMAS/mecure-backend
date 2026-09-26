@@ -182,6 +182,7 @@ export function buildActivityReport({
     quizAttempts = [],
     fieldTasks = [],
     coinAwards = [],
+    scormRegistrations = [],
     filters,
     now = new Date(),
 }) {
@@ -215,6 +216,7 @@ export function buildActivityReport({
         certificates,
         quizAttempts,
         fieldTasks,
+        scormRegistrations,
         from,
         to,
         now,
@@ -404,6 +406,95 @@ function trendRows(trainees, attempts, from, to) {
         }));
 }
 
+function scoreBands(trainees, attempts, from, to) {
+    const learnerIds = new Set(trainees.map((trainee) => trainee.id));
+    const bands = { under50: 0, from50to79: 0, from80: 0 };
+    for (const attempt of attempts) {
+        if (!learnerIds.has(attempt.userId) || !inRange(attempt.updatedAt, from, to)) continue;
+        if (attempt.scorePercent == null || !Number.isFinite(Number(attempt.scorePercent))) continue;
+        const score = Number(attempt.scorePercent);
+        if (score < 50) bands.under50 += 1;
+        else if (score < 80) bands.from50to79 += 1;
+        else bands.from80 += 1;
+    }
+    return bands;
+}
+
+function scormPanels(trainees, registrations, attempts, from, to) {
+    const names = new Map(trainees.map((trainee) => [trainee.id, trainee.fullName]));
+    const included = (registrations || []).filter((row) => (
+        names.has(row.userId) && inRange(row.lastAccessAt || row.updatedAt, from, to)
+    ));
+
+    const registrationRows = included.map((row) => ({
+        id: row.id,
+        fullName: names.get(row.userId),
+        courseTitle: row.courseTitle || 'Course',
+        completion: row.completion || null,
+        success: row.success || null,
+        scorePercent: row.scorePercent ?? null,
+        learningHours: row.learningHours ?? null,
+        firstAccessAt: row.firstAccessAt || null,
+        lastAccessAt: row.lastAccessAt || null,
+    }));
+
+    const activities = included.flatMap((row) => (row.activities || []).map((activity) => ({
+        id: `${row.id}:${activity.activityId}`,
+        fullName: names.get(row.userId),
+        title: activity.title,
+        completion: activity.completion || null,
+        success: activity.success || null,
+        scorePercent: activity.scorePercent ?? null,
+        timeTrackedSeconds: activity.timeTrackedSeconds ?? null,
+    })));
+
+    const interactionRows = included.flatMap((row) => (row.interactions || []).map((interaction) => ({
+        id: `${row.id}:${interaction.activityId || ''}:${interaction.interactionId}`,
+        fullName: names.get(row.userId),
+        question: interaction.description || interaction.interactionId,
+        result: interaction.result || null,
+        weighting: interaction.weighting ?? null,
+    })));
+    const correct = interactionRows.filter((row) => String(row.result || '').toLowerCase() === 'correct').length;
+    const incorrect = interactionRows.filter((row) => String(row.result || '').toLowerCase() === 'incorrect').length;
+
+    const objectives = included.flatMap((row) => (row.objectives || []).map((objective) => ({
+        id: `${row.id}:${objective.activityId || ''}:${objective.objectiveId}`,
+        fullName: names.get(row.userId),
+        objectiveId: objective.objectiveId,
+        success: objective.success || null,
+        completion: objective.completion || null,
+        scorePercent: objective.scorePercent ?? null,
+    })));
+
+    const comments = included.flatMap((row) => (row.comments || []).map((comment, index) => ({
+        id: `${row.id}:${index}`,
+        fullName: names.get(row.userId),
+        comment: comment.comment,
+    })));
+
+    let launchCount = 0;
+    let launchSeconds = 0;
+    for (const row of registrations || []) {
+        if (!names.has(row.userId)) continue;
+        for (const launch of row.launches || []) {
+            if (!inRange(launch.launchedAt, from, to)) continue;
+            launchCount += 1;
+            launchSeconds += Number(launch.durationSeconds) || 0;
+        }
+    }
+
+    return {
+        registrations: registrationRows,
+        activities,
+        interactions: { correct, incorrect, rows: interactionRows },
+        objectives,
+        comments,
+        scoreBands: scoreBands(trainees, attempts, from, to),
+        launches: { count: launchCount, sessionHours: round2(launchSeconds / 3600) },
+    };
+}
+
 function summaryFrom(trainees, atRiskCount) {
     const totals = sumTotals(trainees);
     return {
@@ -438,6 +529,7 @@ function buildAnalytics({
     certificates,
     quizAttempts,
     fieldTasks,
+    scormRegistrations = [],
     from,
     to,
     now,
@@ -493,6 +585,7 @@ function buildAnalytics({
         courses: courseRows(trainees, assignments, attempts, from, to),
         atRisk,
         trend: trendRows(trainees, attempts, from, to),
+        scorm: scormPanels(trainees, scormRegistrations, attempts, from, to),
     };
 }
 

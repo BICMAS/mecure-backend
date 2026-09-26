@@ -106,7 +106,55 @@ export class ActivityReportService {
             }),
             prisma.scormAttempt.findMany({
                 where: { userId: { in: learnerIds } },
-                select: { userId: true, updatedAt: true },
+                select: {
+                    id: true,
+                    userId: true,
+                    status: true,
+                    score: true,
+                    scormCloudScoreScaled: true,
+                    learningHours: true,
+                    firstAccessAt: true,
+                    lastAccessAt: true,
+                    registrationCompletion: true,
+                    registrationSuccess: true,
+                    updatedAt: true,
+                    scormPackage: {
+                        select: {
+                            filename: true,
+                            courses: { select: { title: true }, take: 1 },
+                        },
+                    },
+                    activities: {
+                        select: {
+                            activityId: true,
+                            title: true,
+                            completion: true,
+                            success: true,
+                            scorePercent: true,
+                            timeTrackedSeconds: true,
+                        },
+                    },
+                    interactions: {
+                        select: {
+                            activityId: true,
+                            interactionId: true,
+                            description: true,
+                            result: true,
+                            weighting: true,
+                        },
+                    },
+                    objectives: {
+                        select: {
+                            activityId: true,
+                            objectiveId: true,
+                            success: true,
+                            completion: true,
+                            scorePercent: true,
+                        },
+                    },
+                    comments: { select: { comment: true } },
+                    launches: { select: { launchedAt: true, durationSeconds: true } },
+                },
             }),
             prisma.certificate.findMany({
                 where: { userId: { in: learnerIds } },
@@ -145,7 +193,29 @@ export class ActivityReportService {
                 updatedAt: row.updatedAt,
             })),
             moduleProgress,
-            scormAttempts,
+            scormAttempts: scormAttempts.map((row) => ({
+                userId: row.userId,
+                updatedAt: row.updatedAt,
+            })),
+            scormRegistrations: scormAttempts.map((row) => ({
+                id: row.id,
+                userId: row.userId,
+                courseTitle: row.scormPackage?.courses?.[0]?.title
+                    || row.scormPackage?.filename?.replace(/\.zip$/i, '')
+                    || 'Course',
+                completion: row.registrationCompletion || row.status,
+                success: row.registrationSuccess,
+                scorePercent: computeScorePercent(row.score, row.scormCloudScoreScaled),
+                learningHours: row.learningHours,
+                firstAccessAt: row.firstAccessAt,
+                lastAccessAt: row.lastAccessAt,
+                updatedAt: row.updatedAt,
+                activities: row.activities,
+                interactions: row.interactions,
+                objectives: row.objectives,
+                comments: row.comments,
+                launches: row.launches,
+            })),
             certificates,
             quizAttempts,
             fieldTasks: fieldTasks.map((row) => ({
