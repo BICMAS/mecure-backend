@@ -58,11 +58,26 @@ function courseQuizScore(attempt, linkedScorm) {
     return null;
 }
 
-function scormMatchesCourse(scormAttempt, courseId, attemptId) {
+function packageCourseIds(scormAttempt) {
+    const courses = scormAttempt?.scormPackage?.courses || [];
+    return courses.map((course) => course?.id).filter(Boolean);
+}
+
+function scormPackageIdOf(scormAttempt) {
+    return scormAttempt?.scormPackageId
+        || scormAttempt?.scormPackage?.id
+        || null;
+}
+
+function scormMatchesCourse(scormAttempt, courseId, attemptId, courseScormPackageId = null) {
+    if (!courseId) return false;
     if (attemptId && scormAttempt.attemptId === attemptId) return true;
     if (scormAttempt.attempt?.courseId && scormAttempt.attempt.courseId === courseId) return true;
-    const packageCourseId = scormAttempt.scormPackage?.courses?.[0]?.id;
-    return Boolean(packageCourseId && packageCourseId === courseId);
+
+    const packageId = scormPackageIdOf(scormAttempt);
+    if (courseScormPackageId && packageId && courseScormPackageId === packageId) return true;
+
+    return packageCourseIds(scormAttempt).includes(courseId);
 }
 
 function registrationMoment(scormAttempt) {
@@ -102,9 +117,17 @@ function registrationQuizResult(scormAttempt) {
     return success ? success.toUpperCase() : null;
 }
 
-function courseIdForScorm(scormAttempt) {
-    return scormAttempt?.attempt?.courseId
-        || scormAttempt?.scormPackage?.courses?.[0]?.id
+function courseIdsForScorm(scormAttempt) {
+    const ids = new Set();
+    if (scormAttempt?.attempt?.courseId) ids.add(scormAttempt.attempt.courseId);
+    for (const courseId of packageCourseIds(scormAttempt)) ids.add(courseId);
+    return [...ids];
+}
+
+function coursePackageIdForRow(assignment, attempt) {
+    return assignment?.course?.scormPackageId
+        || attempt?.course?.scormPackageId
+        || attempt?.scormPackageId
         || null;
 }
 
@@ -126,26 +149,32 @@ export function buildCourseTrackingRows({ attempts = [], scormAttempts = [], ass
         ...attemptByCourse.keys(),
     ]);
     for (const scormAttempt of scormAttempts) {
-        const courseId = courseIdForScorm(scormAttempt);
-        if (courseId) courseIds.add(courseId);
+        for (const courseId of courseIdsForScorm(scormAttempt)) {
+            courseIds.add(courseId);
+        }
     }
 
     const rows = [];
     for (const courseId of courseIds) {
         const attempt = attemptByCourse.get(courseId) || null;
         const assignment = assignmentByCourse.get(courseId) || null;
+        const packageId = coursePackageIdForRow(assignment, attempt);
         const registration = latestScormRegistration(
             scormAttempts.filter((scormAttempt) =>
-                scormMatchesCourse(scormAttempt, courseId, attempt?.id || null),
+                scormMatchesCourse(scormAttempt, courseId, attempt?.id || null, packageId),
             ),
         );
         const dueDate = assignment?.dueDate || attempt?.dueDate || null;
+        const matchedPackageCourse = (registration?.scormPackage?.courses || [])
+            .find((course) => course?.id === courseId)
+            || registration?.scormPackage?.courses?.[0]
+            || null;
         const courseTitle = assignment?.course?.title
             || attempt?.course?.title
-            || registration?.scormPackage?.courses?.[0]?.title
+            || matchedPackageCourse?.title
             || registration?.attempt?.course?.title
             || null;
-        const course = assignment?.course || attempt?.course || registration?.scormPackage?.courses?.[0] || null;
+        const course = assignment?.course || attempt?.course || matchedPackageCourse || null;
 
         if (registration) {
             const status = registrationStatus(registration);
@@ -205,6 +234,31 @@ export function buildCourseTrackingRows({ attempts = [], scormAttempts = [], ass
 
     return rows;
 }
+
+const SCORM_ATTEMPT_INCLUDE = {
+    scormPackage: {
+        select: {
+            id: true,
+            filename: true,
+            courses: { select: { id: true, title: true, scormPackageId: true } },
+        },
+    },
+    attempt: {
+        select: {
+            id: true,
+            courseId: true,
+            scormPackageId: true,
+            course: { select: { id: true, title: true, scormPackageId: true } },
+        },
+    },
+    activities: { select: { success: true, scorePercent: true } },
+};
+
+const ASSIGNMENT_COURSE_SELECT = {
+    courseId: true,
+    dueDate: true,
+    course: { select: { id: true, title: true, scormPackageId: true } },
+};
 
 export class DashboardService {
     static async getHRDashboard(orgId) {
@@ -322,7 +376,11 @@ export class HRCourseTrackingService {
         const status = typeof query.status === 'string' ? query.status.trim().toUpperCase() : '';
         const sortBy = typeof query.sortBy === 'string' ? query.sortBy.trim() : 'name';
         const sortOrder = typeof query.sortOrder === 'string' ? query.sortOrder.trim().toLowerCase() : 'asc';
-        const limit = Math.min(Math.max(parseInt(query.limit, 10) || 20, 1), 100);
+        const parsedLimit = parseInt(query.limit, 10);
+        // No limit / invalid limit → return all learners. Frontend paginates course rows.
+        const limit = Number.isFinite(parsedLimit)
+            ? Math.min(Math.max(parsedLimit, 1), 5000)
+            : null;
         const offset = Math.max(parseInt(query.offset, 10) || 0, 0);
 
         return { search, department, status, sortBy, sortOrder, limit, offset };
@@ -417,10 +475,37 @@ export class HRCourseTrackingService {
 
         // AttemptModel is course-level progress (one attempt per userId+courseId via upsert)
         const attempts = await AttemptModel.findByUserId(learnerId);
+        const scormAttempts = await prisma.scormAttempt.findMany({
+            where: { userId: learnerId },
+            include: SCORM_ATTEMPT_INCLUDE,
+            orderBy: { updatedAt: 'desc' },
+        });
+        const assignments = await prisma.assignment.findMany({
+            where: { assigneeUserId: learnerId },
+            select: ASSIGNMENT_COURSE_SELECT,
+        });
 
         const currentCourse = await DashboardModel.getCurrentCourse(learnerId);
         const unfinishedCourses = await DashboardModel.getUnfinishedCourses(learnerId);
         const stats = HRCourseTrackingService.buildLearnerStats(attempts, unfinishedCourses);
+        const courseMap = new Map();
+        const progress = buildCourseTrackingRows({
+            attempts,
+            scormAttempts,
+            assignments,
+        }).map((row) => {
+            if (row.course?.id && !courseMap.has(row.course.id)) {
+                courseMap.set(row.course.id, row.course);
+            }
+            const { course, ...progressRow } = row;
+            return {
+                learnerId: learner.id,
+                learnerName: learner.fullName,
+                learnerEmail: learner.email,
+                learnerDepartment: learner.department || 'UNASSIGNED',
+                ...progressRow,
+            };
+        });
 
         return {
             learner: {
@@ -429,12 +514,18 @@ export class HRCourseTrackingService {
                 email: learner.email,
                 userRole: learner.userRole,
                 status: learner.status,
-                orgId: learner.orgId
+                orgId: learner.orgId,
+                department: learner.department || 'UNASSIGNED',
             },
             attempts,
+            scormAttempts,
+            assignments,
             currentCourse,
             unfinishedCourses,
-            stats
+            stats,
+            users: [learner],
+            courses: Array.from(courseMap.values()),
+            progress,
         };
     }
 
@@ -459,32 +550,12 @@ export class HRCourseTrackingService {
                 const attempts = await AttemptModel.findByUserId(learner.id);
                 const scormAttempts = await prisma.scormAttempt.findMany({
                     where: { userId: learner.id },
-                    include: {
-                        scormPackage: {
-                            select: {
-                                id: true,
-                                filename: true,
-                                courses: { select: { id: true, title: true }, take: 1 },
-                            },
-                        },
-                        attempt: {
-                            select: {
-                                id: true,
-                                courseId: true,
-                                course: { select: { id: true, title: true } },
-                            },
-                        },
-                        activities: { select: { success: true, scorePercent: true } },
-                    },
+                    include: SCORM_ATTEMPT_INCLUDE,
                     orderBy: { updatedAt: 'desc' },
                 });
                 const assignments = await prisma.assignment.findMany({
                     where: { assigneeUserId: learner.id },
-                    select: {
-                        courseId: true,
-                        dueDate: true,
-                        course: { select: { id: true, title: true } },
-                    },
+                    select: ASSIGNMENT_COURSE_SELECT,
                 });
                 const currentCourse = await DashboardModel.getCurrentCourse(learner.id);
                 const unfinishedCourses = await DashboardModel.getUnfinishedCourses(learner.id);
@@ -517,7 +588,9 @@ export class HRCourseTrackingService {
 
         const sorted = HRCourseTrackingService.sortTrackingItems(filtered, sortBy, sortOrder);
         const total = sorted.length;
-        const paginated = sorted.slice(offset, offset + limit);
+        const paginated = limit == null
+            ? sorted
+            : sorted.slice(offset, offset + limit);
 
         const users = paginated.map((item) => item.learner);
         const courseMap = new Map();
@@ -558,7 +631,7 @@ export class HRCourseTrackingService {
                 total,
                 limit,
                 offset,
-                pageCount: Math.ceil(total / limit),
+                pageCount: limit == null ? 1 : Math.ceil(total / limit),
                 filters: { search, department, status, sortBy, sortOrder }
             }
         };

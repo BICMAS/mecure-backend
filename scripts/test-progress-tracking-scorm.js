@@ -139,9 +139,48 @@ function testAssignmentWithoutRegistration() {
     assert.equal(rows[0].dueDate, assignmentDue);
 }
 
+function testPackageIdMatchWithoutCoursesArray() {
+    const rows = buildCourseTrackingRows({
+        assignments: [{
+            courseId: course.id,
+            dueDate: assignmentDue,
+            course: { ...course, scormPackageId: 'pkg-1' },
+        }],
+        attempts: [{
+            id: 'attempt-1',
+            courseId: course.id,
+            course: { ...course, scormPackageId: 'pkg-1' },
+            status: 'NOT_STARTED',
+            completionPercentage: 0,
+            dueDate: attemptDue,
+        }],
+        scormAttempts: [{
+            id: 'scorm-pkg',
+            scormPackageId: 'pkg-1',
+            status: 'IN_PROGRESS',
+            registrationCompletion: 'INCOMPLETE',
+            registrationSuccess: 'PASSED',
+            completionPercentage: 67,
+            score: 67,
+            learningHours: 0.88,
+            lastAccessAt: new Date('2026-09-27T00:00:00.000Z'),
+            // Package courses relation empty — match must use course.scormPackageId
+            scormPackage: { id: 'pkg-1', courses: [] },
+        }],
+    });
+
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].status, 'INCOMPLETE');
+    assert.equal(rows[0].progressPercent, 67);
+    assert.equal(rows[0].score, 67);
+    assert.equal(rows[0].quizResult, 'PASSED');
+    assert.equal(rows[0].learningHours, 0.88);
+}
+
 testRegistrationBeatsAttempt();
 testLatestRegistration();
 testCloudCompletionAndMissingRegistration();
 testAssignmentWithoutRegistration();
+testPackageIdMatchWithoutCoursesArray();
 console.log('progress tracking scorm rows passed');
 await disconnectPrisma();
