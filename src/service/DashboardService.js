@@ -65,6 +65,147 @@ function scormMatchesCourse(scormAttempt, courseId, attemptId) {
     return Boolean(packageCourseId && packageCourseId === courseId);
 }
 
+function registrationMoment(scormAttempt) {
+    const lastAccess = scormAttempt?.lastAccessAt ? new Date(scormAttempt.lastAccessAt).getTime() : NaN;
+    if (Number.isFinite(lastAccess)) return lastAccess;
+    const updated = scormAttempt?.updatedAt ? new Date(scormAttempt.updatedAt).getTime() : NaN;
+    return Number.isFinite(updated) ? updated : 0;
+}
+
+function latestScormRegistration(linked) {
+    if (!linked?.length) return null;
+    return [...linked].sort((a, b) => registrationMoment(b) - registrationMoment(a))[0];
+}
+
+function registrationStatus(scormAttempt) {
+    const completion = String(scormAttempt?.registrationCompletion || '').trim();
+    if (completion) return completion.toUpperCase();
+    const status = String(scormAttempt?.status || '').trim();
+    return status ? status.toUpperCase() : 'NOT_STARTED';
+}
+
+function registrationProgress(scormAttempt, status) {
+    const percent = numericScore(scormAttempt?.completionPercentage);
+    if (percent != null) return Math.min(100, Math.max(0, Math.round(percent)));
+
+    const cloud = numericScore(scormAttempt?.scormCloudCompletion);
+    if (cloud != null && cloud >= 0 && cloud <= 1) {
+        return Math.min(100, Math.round(cloud * 100));
+    }
+
+    if (String(status).toUpperCase() === 'COMPLETED') return 100;
+    return 0;
+}
+
+function registrationQuizResult(scormAttempt) {
+    const success = String(scormAttempt?.registrationSuccess || '').trim();
+    return success ? success.toUpperCase() : null;
+}
+
+function courseIdForScorm(scormAttempt) {
+    return scormAttempt?.attempt?.courseId
+        || scormAttempt?.scormPackage?.courses?.[0]?.id
+        || null;
+}
+
+export function buildCourseTrackingRows({ attempts = [], scormAttempts = [], assignments = [] } = {}) {
+    const attemptByCourse = new Map();
+    for (const attempt of attempts) {
+        if (!attempt?.courseId || attemptByCourse.has(attempt.courseId)) continue;
+        attemptByCourse.set(attempt.courseId, attempt);
+    }
+
+    const assignmentByCourse = new Map();
+    for (const assignment of assignments) {
+        if (!assignment?.courseId || assignmentByCourse.has(assignment.courseId)) continue;
+        assignmentByCourse.set(assignment.courseId, assignment);
+    }
+
+    const courseIds = new Set([
+        ...assignmentByCourse.keys(),
+        ...attemptByCourse.keys(),
+    ]);
+    for (const scormAttempt of scormAttempts) {
+        const courseId = courseIdForScorm(scormAttempt);
+        if (courseId) courseIds.add(courseId);
+    }
+
+    const rows = [];
+    for (const courseId of courseIds) {
+        const attempt = attemptByCourse.get(courseId) || null;
+        const assignment = assignmentByCourse.get(courseId) || null;
+        const registration = latestScormRegistration(
+            scormAttempts.filter((scormAttempt) =>
+                scormMatchesCourse(scormAttempt, courseId, attempt?.id || null),
+            ),
+        );
+        const dueDate = assignment?.dueDate || attempt?.dueDate || null;
+        const courseTitle = assignment?.course?.title
+            || attempt?.course?.title
+            || registration?.scormPackage?.courses?.[0]?.title
+            || registration?.attempt?.course?.title
+            || null;
+        const course = assignment?.course || attempt?.course || registration?.scormPackage?.courses?.[0] || null;
+
+        if (registration) {
+            const status = registrationStatus(registration);
+            const progress = registrationProgress(registration, status);
+            rows.push({
+                courseId,
+                courseTitle,
+                course,
+                status,
+                completionPercentage: progress,
+                progressPercent: progress,
+                score: scormQuizScore(registration),
+                quizResult: registrationQuizResult(registration),
+                learningHours: numericScore(registration.learningHours),
+                passed: registrationQuizResult(registration) === 'PASSED',
+                dueDate,
+                syncedAt: registration.lastAccessAt || registration.updatedAt || null,
+            });
+            continue;
+        }
+
+        if (attempt) {
+            const status = String(attempt.status || 'NOT_STARTED').toUpperCase();
+            const progress = numericScore(attempt.completionPercentage) ?? 0;
+            rows.push({
+                courseId,
+                courseTitle,
+                course,
+                status,
+                completionPercentage: progress,
+                progressPercent: progress,
+                score: courseQuizScore(attempt, []),
+                quizResult: null,
+                learningHours: null,
+                passed: status === 'COMPLETED' || status === 'PASSED',
+                dueDate,
+                syncedAt: attempt.updatedAt || null,
+            });
+            continue;
+        }
+
+        rows.push({
+            courseId,
+            courseTitle,
+            course,
+            status: 'NOT_STARTED',
+            completionPercentage: 0,
+            progressPercent: 0,
+            score: null,
+            quizResult: null,
+            learningHours: null,
+            passed: false,
+            dueDate,
+            syncedAt: null,
+        });
+    }
+
+    return rows;
+}
+
 export class DashboardService {
     static async getHRDashboard(orgId) {
         console.log('[DASHBOARD SERVICE] Fetching for orgId:', orgId);
@@ -393,63 +534,17 @@ export class HRCourseTrackingService {
                 });
             };
 
-            const scormAttempts = item.scormAttempts || [];
-            const assignments = item.assignments || [];
-            const dueDateByCourse = new Map(
-                assignments
-                    .filter((assignment) => assignment.courseId)
-                    .map((assignment) => [assignment.courseId, assignment.dueDate || null]),
-            );
-            const seenCourseIds = new Set();
-
-            (item.attempts || []).forEach((attempt) => {
-                if (!attempt?.courseId) return;
-                seenCourseIds.add(attempt.courseId);
-                if (attempt.course?.id && !courseMap.has(attempt.course.id)) {
-                    courseMap.set(attempt.course.id, attempt.course);
-                }
-
-                const linkedScorm = scormAttempts.filter((scormAttempt) =>
-                    scormMatchesCourse(scormAttempt, attempt.courseId, attempt.id),
-                );
-                const completionPercentage = numericScore(attempt.completionPercentage) ?? 0;
-                const score = courseQuizScore(attempt, linkedScorm);
-                const status = attempt.status || 'NOT_STARTED';
-
-                pushProgressRow({
-                    courseId: attempt.courseId,
-                    courseTitle: attempt.course?.title || null,
-                    status,
-                    completionPercentage,
-                    progressPercent: completionPercentage,
-                    score,
-                    scoreRaw: attempt.score ?? null,
-                    passed: status === 'COMPLETED' || status === 'PASSED',
-                    dueDate: attempt.dueDate || dueDateByCourse.get(attempt.courseId) || null,
-                    syncedAt: attempt.updatedAt || null,
-                });
+            const rows = buildCourseTrackingRows({
+                attempts: item.attempts || [],
+                scormAttempts: item.scormAttempts || [],
+                assignments: item.assignments || [],
             });
-
-            assignments.forEach((assignment) => {
-                if (!assignment.courseId || seenCourseIds.has(assignment.courseId)) return;
-                if (assignment.course?.id && !courseMap.has(assignment.course.id)) {
-                    courseMap.set(assignment.course.id, assignment.course);
+            rows.forEach((row) => {
+                if (row.course?.id && !courseMap.has(row.course.id)) {
+                    courseMap.set(row.course.id, row.course);
                 }
-                const linkedScorm = scormAttempts.filter((scormAttempt) =>
-                    scormMatchesCourse(scormAttempt, assignment.courseId, null),
-                );
-                pushProgressRow({
-                    courseId: assignment.courseId,
-                    courseTitle: assignment.course?.title || null,
-                    status: 'NOT_STARTED',
-                    completionPercentage: 0,
-                    progressPercent: 0,
-                    score: courseQuizScore(null, linkedScorm),
-                    scoreRaw: null,
-                    passed: false,
-                    dueDate: assignment.dueDate || null,
-                    syncedAt: null,
-                });
+                const { course, ...progressRow } = row;
+                pushProgressRow(progressRow);
             });
         });
 
