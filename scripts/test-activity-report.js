@@ -86,6 +86,41 @@ function testBuilderAndCsv() {
     assert.equal(report.analytics.scorm.interactions.rows.length, 0);
     assert.equal(report.analytics.funnel.completed, 0);
 
+    const completedWithScormTime = buildActivityReport({
+        learners: [
+            { id: 'a', fullName: 'Ada', email: 'ada@example.com', department: 'SALES', points: 12, batchName: 'Batch A' },
+        ],
+        assignments: [
+            { userId: 'a', courseId: 'course-1', courseTitle: 'Planning', dueDate: new Date('2026-01-10T00:00:00.000Z'), createdAt: new Date('2026-01-02T00:00:00.000Z') },
+        ],
+        attempts: [
+            { id: 'attempt-a', userId: 'a', courseId: 'course-1', status: 'COMPLETED', completionPercentage: 100, scorePercent: 90, learningHours: 4, updatedAt: new Date('2026-01-05T00:00:00.000Z') },
+            { id: 'attempt-failed', userId: 'a', courseId: 'course-2', status: 'FAILED', completionPercentage: 100, scorePercent: 40, learningHours: null, updatedAt: new Date('2026-01-05T00:00:00.000Z') },
+        ],
+        scormRegistrations: [
+            {
+                id: 'reg-pass',
+                userId: 'a',
+                attemptId: 'attempt-a',
+                courseIds: ['course-1'],
+                learningHours: 2,
+                updatedAt: new Date('2026-01-06T00:00:00.000Z'),
+                launches: [{ launchedAt: new Date('2026-01-06T00:00:00.000Z'), durationSeconds: 1800 }],
+            },
+        ],
+        filters,
+        now: new Date('2026-02-01T00:00:00.000Z'),
+    });
+    assert.equal(completedWithScormTime.analytics.funnel.passed, 1);
+    assert.equal(completedWithScormTime.analytics.summary.passRate, 100);
+    assert.equal(completedWithScormTime.analytics.summary.completionRate, 100);
+    assert.equal(completedWithScormTime.trainees[0].learningHours, 2.5);
+    assert.equal(completedWithScormTime.analytics.summary.learningHours, 2.5);
+    assert.equal(
+        completedWithScormTime.analytics.trend.find((row) => row.month === '2026-01')?.learningHours,
+        2.5,
+    );
+
     const batchOnly = buildActivityReport({
         learners: [
             { id: 'a', fullName: 'Ada', email: 'ada@example.com', department: 'SALES', points: 12, batchName: 'Batch A' },

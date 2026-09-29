@@ -13,12 +13,12 @@ import { CourseService } from './CourseService.js';
 export class DashboardService {
     static async getHRDashboard(orgId) {
         console.log('[DASHBOARD SERVICE] Fetching for orgId:', orgId);
-        const [totalLearners, averageCompletion, overdueCourses, activeAssignments, topPerformers, completionByDepartment, courseStatus, scoreLeaderboard, pointsLeaderboard] = await Promise.all([
+        const [totalLearners, openAssignments, overdueAssignments, completedAssignments, topPerformers, completionByDepartment, courseStatus, scoreLeaderboard, pointsLeaderboard] = await Promise.all([
 
             DashboardModel.getTotalLearners(orgId),
-            DashboardModel.getAverageCompletion(orgId),
-            DashboardModel.getOverdueCourses(orgId),
-            DashboardModel.getActiveAssignments(orgId),
+            DashboardModel.getOpenAssignments(orgId),
+            DashboardModel.getOverdueAssignments(orgId),
+            DashboardModel.getCompletedAssignments(orgId),
             DashboardModel.getTopPerformers(orgId),
             DashboardModel.getCompletionByDepartment(orgId),
             DashboardModel.getCourseStatus(orgId),
@@ -28,9 +28,9 @@ export class DashboardService {
 
         return {
             totalLearners,
-            averageCompletion: Math.round(averageCompletion * 100) / 100,  // 2 decimals
-            overdueCourses,
-            activeAssignments,
+            openAssignments,
+            overdueAssignments,
+            completedAssignments,
             topPerformers,
             scoreLeaderboard,
             pointsLeaderboard,

@@ -195,6 +195,7 @@ export function buildActivityReport({
         attempts,
         moduleProgress,
         scormAttempts,
+        scormRegistrations,
         certificates,
         quizAttempts,
         fieldTasks,
@@ -366,7 +367,76 @@ function courseRows(trainees, assignments, attempts, from, to) {
         .sort((a, b) => a.title.localeCompare(b.title));
 }
 
-function trendRows(trainees, attempts, from, to) {
+function positiveHours(value) {
+    const hours = Number(value);
+    return Number.isFinite(hours) && hours > 0 ? hours : 0;
+}
+
+function trackedTimeEntries(attempts, scormRegistrations, from, to) {
+    const entries = [];
+    const linkedAttemptIds = new Set();
+    const linkedCourseKeys = new Set();
+
+    const markLinked = (registration) => {
+        if (registration.attemptId) linkedAttemptIds.add(registration.attemptId);
+        for (const courseId of registration.courseIds || []) {
+            if (courseId) linkedCourseKeys.add(`${registration.userId}:${courseId}`);
+        }
+    };
+
+    for (const registration of scormRegistrations || []) {
+        if (!registration?.userId) continue;
+        const registrationAt = registration.updatedAt || registration.lastAccessAt;
+        const scormHours = inRange(registrationAt, from, to)
+            ? positiveHours(registration.learningHours)
+            : 0;
+        if (scormHours > 0) {
+            entries.push({
+                userId: registration.userId,
+                at: registrationAt,
+                hours: scormHours,
+            });
+            markLinked(registration);
+        }
+
+        for (const launch of registration.launches || []) {
+            if (!inRange(launch.launchedAt, from, to)) continue;
+            const launchHours = (Number(launch.durationSeconds) || 0) / 3600;
+            if (!(launchHours > 0)) continue;
+            entries.push({
+                userId: registration.userId,
+                at: launch.launchedAt,
+                hours: launchHours,
+            });
+            markLinked(registration);
+        }
+    }
+
+    for (const attempt of attempts || []) {
+        if (!attempt?.userId || !inRange(attempt.updatedAt, from, to)) continue;
+        const hours = positiveHours(attempt.learningHours);
+        if (!(hours > 0)) continue;
+        const linkedToScormTime = (attempt.id && linkedAttemptIds.has(attempt.id))
+            || (attempt.courseId && linkedCourseKeys.has(`${attempt.userId}:${attempt.courseId}`));
+        if (linkedToScormTime) continue;
+        entries.push({
+            userId: attempt.userId,
+            at: attempt.updatedAt,
+            hours,
+        });
+    }
+
+    return entries;
+}
+
+function hoursForLearner(userId, entries) {
+    return round2(entries.reduce(
+        (sum, entry) => (entry.userId === userId ? sum + entry.hours : sum),
+        0,
+    ));
+}
+
+function trendRows(trainees, attempts, scormRegistrations, from, to) {
     const learnerIds = new Set(trainees.map((trainee) => trainee.id));
     const buckets = new Map();
     const ensure = (key) => {
@@ -385,13 +455,19 @@ function trendRows(trainees, attempts, from, to) {
         for (const key of monthsInRange(from, to)) ensure(key);
     }
 
+    for (const entry of trackedTimeEntries(attempts, scormRegistrations, from, to)) {
+        if (!learnerIds.has(entry.userId) || !entry.at) continue;
+        const bucket = ensure(monthKey(entry.at));
+        bucket.learners.add(entry.userId);
+        bucket.learningHours = round2(bucket.learningHours + entry.hours);
+    }
+
     for (const attempt of attempts) {
         if (!learnerIds.has(attempt.userId) || !inRange(attempt.updatedAt, from, to) || !attempt.updatedAt) {
             continue;
         }
         const bucket = ensure(monthKey(attempt.updatedAt));
         bucket.learners.add(attempt.userId);
-        bucket.learningHours = round2(bucket.learningHours + (Number(attempt.learningHours) || 0));
         bucket.progress.push(Number(attempt.completionPercentage) || 0);
     }
 
@@ -562,6 +638,7 @@ function buildAnalytics({
             attempts,
             moduleProgress,
             scormAttempts,
+            scormRegistrations,
             certificates,
             quizAttempts,
             fieldTasks,
@@ -584,7 +661,7 @@ function buildAnalytics({
         },
         courses: courseRows(trainees, assignments, attempts, from, to),
         atRisk,
-        trend: trendRows(trainees, attempts, from, to),
+        trend: trendRows(trainees, attempts, scormRegistrations, from, to),
         scorm: scormPanels(trainees, scormRegistrations, attempts, from, to),
     };
 }
@@ -595,6 +672,7 @@ function buildTraineeRows({
     attempts = [],
     moduleProgress = [],
     scormAttempts = [],
+    scormRegistrations = [],
     certificates = [],
     quizAttempts = [],
     fieldTasks = [],
@@ -612,6 +690,8 @@ function buildTraineeRows({
         }
     }
 
+    const timeEntries = trackedTimeEntries(attempts, scormRegistrations, from, to);
+
     return learners
         .map((learner) => {
             const learnerAssignments = assignments.filter((row) => row.userId === learner.id);
@@ -624,7 +704,7 @@ function buildTraineeRows({
                 .filter((score) => score != null && Number.isFinite(Number(score)))
                 .map(Number);
             const progressValues = learnerAttempts.map((row) => Number(row.completionPercentage) || 0);
-            const learningHours = learnerAttempts.reduce((sum, row) => sum + (Number(row.learningHours) || 0), 0);
+            const learningHours = hoursForLearner(learner.id, timeEntries);
             const overdueCourses = learnerAssignments.filter((row) => {
                 if (!row.dueDate) return false;
                 const due = new Date(row.dueDate);
@@ -643,7 +723,7 @@ function buildTraineeRows({
                 if (attempt && COMPLETED_STATUSES.has(attempt.status)) {
                     completedCourses += 1;
                 }
-                if (attempt && attempt.status === 'PASSED') {
+                if (attempt && COMPLETED_STATUSES.has(attempt.status)) {
                     passedCourses += 1;
                 }
                 const progress = attempt ? `${Math.round(Number(attempt.completionPercentage) || 0)}%` : 'Not started';

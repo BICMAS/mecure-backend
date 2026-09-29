@@ -14,6 +14,11 @@ import {
 
 const scormCallbackRouter = express.Router();
 
+function positiveLearningHours(value) {
+    const hours = Number(value);
+    return Number.isFinite(hours) && hours > 0 ? hours : null;
+}
+
 function verifyCallbackSecret(req) {
     const expected = process.env.SCORM_CALLBACK_SECRET;
     if (!expected) {
@@ -113,9 +118,12 @@ scormCallbackRouter.post('/', express.urlencoded({ extended: true }), async (req
             status: persistedStatus,
             completionPercentage: normalized.completionPercentage,
             score: normalized.scoreRaw,
-            learningHours: normalized.learningHours,
             updatedAt: new Date(),
         };
+        const trackedHours = positiveLearningHours(normalized.learningHours);
+        if (trackedHours != null) {
+            attemptData.learningHours = trackedHours;
+        }
 
         const previousScormStatus = existingScormAttempt.status;
         let courseAttemptId = existingScormAttempt.attemptId || null;
@@ -151,7 +159,7 @@ scormCallbackRouter.post('/', express.urlencoded({ extended: true }), async (req
                 status: persistedStatus,
                 completionPercentage: normalized.completionPercentage,
                 score: normalized.scoreRaw,
-                learningHours: normalized.learningHours,
+                ...(trackedHours != null ? { learningHours: trackedHours } : {}),
                 scormCloudLastSyncAt: new Date(),
                 scormCloudCompletion: normalized.scormCloudCompletion,
                 scormCloudScoreScaled: normalized.scoreScaled,

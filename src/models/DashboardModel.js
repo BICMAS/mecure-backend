@@ -39,9 +39,26 @@ export class DashboardModel {
         }
     }
 
-    static async getOverdueCourses(orgId) {
+    static async getOpenAssignments(orgId) {
         try {
-            console.log('[DASHBOARD MODEL] getOverdueCourses for orgId:', orgId);
+            console.log('[DASHBOARD MODEL] getOpenAssignments for orgId:', orgId);
+            return await prisma.assignment.count({
+                where: {
+                    AND: [
+                        assignmentWhereForOrg(orgId),
+                        { NOT: { attempts: { some: { status: 'COMPLETED' } } } }
+                    ]
+                }
+            });
+        } catch (error) {
+            console.error('[DASHBOARD MODEL ERROR getOpenAssignments]', error.message);
+            return 0;
+        }
+    }
+
+    static async getOverdueAssignments(orgId) {
+        try {
+            console.log('[DASHBOARD MODEL] getOverdueAssignments for orgId:', orgId);
             return await prisma.assignment.count({
                 where: {
                     AND: [
@@ -52,25 +69,24 @@ export class DashboardModel {
                 }
             });
         } catch (error) {
-            console.error('[DASHBOARD MODEL ERROR getOverdueCourses]', error.message);
+            console.error('[DASHBOARD MODEL ERROR getOverdueAssignments]', error.message);
             return 0;
         }
     }
 
-    static async getActiveAssignments(orgId) {
+    static async getCompletedAssignments(orgId) {
         try {
-            console.log('[DASHBOARD MODEL] getActiveAssignments for orgId:', orgId);
+            console.log('[DASHBOARD MODEL] getCompletedAssignments for orgId:', orgId);
             return await prisma.assignment.count({
                 where: {
                     AND: [
                         assignmentWhereForOrg(orgId),
-                        { dueDate: { gte: new Date() } },
-                        { NOT: { attempts: { some: { status: 'COMPLETED' } } } }
+                        { attempts: { some: { status: 'COMPLETED' } } }
                     ]
                 }
             });
         } catch (error) {
-            console.error('[DASHBOARD MODEL ERROR getActiveAssignments]', error.message);
+            console.error('[DASHBOARD MODEL ERROR getCompletedAssignments]', error.message);
             return 0;
         }
     }

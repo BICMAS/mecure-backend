@@ -20,6 +20,11 @@ import { fetchScormRegistrationReport, persistScormRegistrationReport } from '..
 import { CourseModel } from '../models/CourseModel.js';
 import { assertLearnerCourseUnlocked } from '../lib/courseLock.js';
 
+function positiveLearningHours(value) {
+    const hours = Number(value);
+    return Number.isFinite(hours) && hours > 0 ? hours : null;
+}
+
 function buildSyncResponse(scormAttempt, outcome) {
     return {
         ...scormAttempt,
@@ -162,12 +167,15 @@ export class AttemptService {
             status: persistedStatus,
             completionPercentage: normalized.completionPercentage,
             score: normalized.scoreRaw,
-            learningHours: normalized.learningHours,
             scormCloudLastSyncAt: new Date(),
             scormCloudCompletion: normalized.scormCloudCompletion,
             scormCloudScoreScaled: normalized.scoreScaled,
             updatedAt: new Date(),
         };
+        const trackedHours = positiveLearningHours(normalized.learningHours);
+        if (trackedHours != null) {
+            updateData.learningHours = trackedHours;
+        }
 
         const updated = await prisma.scormAttempt.update({
             where: { id: scormAttemptId },
@@ -516,9 +524,19 @@ export class AttemptService {
 
         const alreadyOfficiallyPassed =
             previousStatus === 'COMPLETED' || previousStatus === 'PASSED';
+        const linkedScormHours = courseAttempt.scormAttempts.reduce((sum, item) => {
+            return sum + (positiveLearningHours(item.learningHours) || 0);
+        }, 0);
+        const hourUpdate = linkedScormHours > 0 ? { learningHours: linkedScormHours } : {};
 
         // Practice SCORM sessions must not wipe official completion / canonical score.
         if (alreadyOfficiallyPassed && !outcome.passed) {
+            if (linkedScormHours > 0) {
+                await prisma.attempt.update({
+                    where: { id: courseAttemptId },
+                    data: { ...hourUpdate, updatedAt: new Date() },
+                });
+            }
             return;
         }
 
@@ -527,12 +545,14 @@ export class AttemptService {
             data: alreadyOfficiallyPassed
                 ? {
                     updatedAt: new Date(),
+                    ...hourUpdate,
                 }
                 : {
                     completionPercentage: outcome.progress,
                     status: outcome.status,
                     score: rolledUpScore,
                     updatedAt: new Date(),
+                    ...hourUpdate,
                 },
         });
 

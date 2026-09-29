@@ -90,6 +90,7 @@ export class ActivityReportService {
             prisma.attempt.findMany({
                 where: { userId: { in: learnerIds } },
                 select: {
+                    id: true,
                     userId: true,
                     courseId: true,
                     status: true,
@@ -109,6 +110,7 @@ export class ActivityReportService {
                 select: {
                     id: true,
                     userId: true,
+                    attemptId: true,
                     status: true,
                     score: true,
                     scormCloudScoreScaled: true,
@@ -121,7 +123,7 @@ export class ActivityReportService {
                     scormPackage: {
                         select: {
                             filename: true,
-                            courses: { select: { title: true }, take: 1 },
+                            courses: { select: { id: true, title: true }, take: 1 },
                         },
                     },
                     activities: {
@@ -184,6 +186,7 @@ export class ActivityReportService {
                 createdAt: row.createdAt,
             })),
             attempts: attempts.map((row) => ({
+                id: row.id,
                 userId: row.userId,
                 courseId: row.courseId,
                 status: row.status,
@@ -206,6 +209,8 @@ export class ActivityReportService {
                 completion: row.registrationCompletion || row.status,
                 success: row.registrationSuccess,
                 scorePercent: computeScorePercent(row.score, row.scormCloudScoreScaled),
+                attemptId: row.attemptId,
+                courseIds: (row.scormPackage?.courses || []).map((course) => course.id).filter(Boolean),
                 learningHours: row.learningHours,
                 firstAccessAt: row.firstAccessAt,
                 lastAccessAt: row.lastAccessAt,
