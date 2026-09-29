@@ -3,6 +3,7 @@ import {
     createAssignments,
     getAssignedCourses,
     getCourseAssignees,
+    updateAssignmentDueDate,
 } from '../controllers/AssignmentController.js';
 import { authenticateToken, requireRole } from '../middleware/authMiddleware.js';
 
@@ -15,6 +16,12 @@ assignmentRouter.get(
     authenticateToken,
     requireRole(['HR_MANAGER', 'SUPER_ADMIN']),
     getCourseAssignees,
+);
+assignmentRouter.patch(
+    '/:assignmentId/due-date',
+    authenticateToken,
+    requireRole(['HR_MANAGER', 'SUPER_ADMIN']),
+    updateAssignmentDueDate,
 );
 
 export default assignmentRouter;

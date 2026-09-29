@@ -10,6 +10,61 @@ import {
 } from '../lib/courseImage.js';
 import { CourseService } from './CourseService.js';
 
+function numericScore(value) {
+    if (value == null || value === '') return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+}
+
+function activityQuizScore(scormAttempt) {
+    const activities = scormAttempt?.activities || [];
+    const passedScores = activities
+        .filter((activity) => String(activity.success || '').toUpperCase() === 'PASSED')
+        .map((activity) => numericScore(activity.scorePercent))
+        .filter((value) => value != null);
+    if (passedScores.length) return Math.round(Math.max(...passedScores));
+
+    const scores = activities
+        .map((activity) => numericScore(activity.scorePercent))
+        .filter((value) => value != null);
+    if (!scores.length) return null;
+    return Math.round(Math.max(...scores));
+}
+
+function scormQuizScore(scormAttempt) {
+    const fromFields = computeScorePercent(scormAttempt?.score, scormAttempt?.scormCloudScoreScaled);
+    if (fromFields != null) return fromFields;
+
+    const fromActivity = activityQuizScore(scormAttempt);
+    if (fromActivity != null) return fromActivity;
+
+    if (String(scormAttempt?.registrationSuccess || '').toUpperCase() === 'PASSED') {
+        const passedActivity = activityQuizScore(scormAttempt);
+        if (passedActivity != null) return passedActivity;
+    }
+
+    return null;
+}
+
+function courseQuizScore(attempt, linkedScorm) {
+    const fromAttempt = computeScorePercent(attempt?.score, attempt?.scormCloudScoreScaled);
+    if (fromAttempt != null) return fromAttempt;
+
+    for (const scormAttempt of linkedScorm) {
+        const score = scormQuizScore(scormAttempt);
+        if (score != null) return score;
+    }
+
+    return null;
+}
+
+function scormMatchesCourse(scormAttempt, courseId, attemptId) {
+    if (attemptId && scormAttempt.attemptId === attemptId) return true;
+    if (scormAttempt.attempt?.courseId && scormAttempt.attempt.courseId === courseId) return true;
+    const packageCourseId = scormAttempt.scormPackage?.courses?.[0]?.id;
+    return Boolean(packageCourseId && packageCourseId === courseId);
+}
+
 export class DashboardService {
     static async getHRDashboard(orgId) {
         console.log('[DASHBOARD SERVICE] Fetching for orgId:', orgId);
@@ -264,15 +319,31 @@ export class HRCourseTrackingService {
                 const scormAttempts = await prisma.scormAttempt.findMany({
                     where: { userId: learner.id },
                     include: {
-                        scormPackage: { select: { id: true, filename: true } },
+                        scormPackage: {
+                            select: {
+                                id: true,
+                                filename: true,
+                                courses: { select: { id: true, title: true }, take: 1 },
+                            },
+                        },
                         attempt: {
                             select: {
+                                id: true,
                                 courseId: true,
                                 course: { select: { id: true, title: true } },
                             },
                         },
+                        activities: { select: { success: true, scorePercent: true } },
                     },
                     orderBy: { updatedAt: 'desc' },
+                });
+                const assignments = await prisma.assignment.findMany({
+                    where: { assigneeUserId: learner.id },
+                    select: {
+                        courseId: true,
+                        dueDate: true,
+                        course: { select: { id: true, title: true } },
+                    },
                 });
                 const currentCourse = await DashboardModel.getCurrentCourse(learner.id);
                 const unfinishedCourses = await DashboardModel.getUnfinishedCourses(learner.id);
@@ -283,6 +354,7 @@ export class HRCourseTrackingService {
                     learner,
                     attempts,
                     scormAttempts,
+                    assignments,
                     currentCourse,
                     unfinishedCourses,
                     stats,
@@ -322,46 +394,61 @@ export class HRCourseTrackingService {
             };
 
             const scormAttempts = item.scormAttempts || [];
-
-            if (scormAttempts.length > 0) {
-                scormAttempts.forEach((scormAttempt) => {
-                    const scorePercent = computeScorePercent(
-                        scormAttempt.score,
-                        scormAttempt.scormCloudScoreScaled,
-                    );
-                    pushProgressRow({
-                        courseId: scormAttempt.attempt?.courseId || scormAttempt.scormPackageId,
-                        courseTitle:
-                            scormAttempt.attempt?.course?.title
-                            || scormAttempt.scormPackage?.filename?.replace(/\.zip$/i, '')
-                            || 'SCORM Module',
-                        status: scormAttempt.status,
-                        completionPercentage: scormAttempt.completionPercentage || 0,
-                        score: scorePercent,
-                        scoreRaw: scormAttempt.score,
-                        passed: scormAttempt.status === 'PASSED' || scorePercent === 100,
-                        dueDate: null,
-                        syncedAt: scormAttempt.updatedAt || null,
-                    });
-                });
-                return;
-            }
+            const assignments = item.assignments || [];
+            const dueDateByCourse = new Map(
+                assignments
+                    .filter((assignment) => assignment.courseId)
+                    .map((assignment) => [assignment.courseId, assignment.dueDate || null]),
+            );
+            const seenCourseIds = new Set();
 
             (item.attempts || []).forEach((attempt) => {
-                if (attempt?.course?.id && !courseMap.has(attempt.course.id)) {
+                if (!attempt?.courseId) return;
+                seenCourseIds.add(attempt.courseId);
+                if (attempt.course?.id && !courseMap.has(attempt.course.id)) {
                     courseMap.set(attempt.course.id, attempt.course);
                 }
-                const scorePercent = computeScorePercent(attempt.score, attempt.scormCloudScoreScaled);
+
+                const linkedScorm = scormAttempts.filter((scormAttempt) =>
+                    scormMatchesCourse(scormAttempt, attempt.courseId, attempt.id),
+                );
+                const completionPercentage = numericScore(attempt.completionPercentage) ?? 0;
+                const score = courseQuizScore(attempt, linkedScorm);
+                const status = attempt.status || 'NOT_STARTED';
+
                 pushProgressRow({
-                    courseId: attempt.courseId || null,
+                    courseId: attempt.courseId,
                     courseTitle: attempt.course?.title || null,
-                    status: attempt.status,
-                    completionPercentage: attempt.completionPercentage || 0,
-                    score: scorePercent ?? attempt.score ?? null,
+                    status,
+                    completionPercentage,
+                    progressPercent: completionPercentage,
+                    score,
                     scoreRaw: attempt.score ?? null,
-                    passed: attempt.status === 'PASSED' || scorePercent === 100,
-                    dueDate: attempt.dueDate || null,
+                    passed: status === 'COMPLETED' || status === 'PASSED',
+                    dueDate: attempt.dueDate || dueDateByCourse.get(attempt.courseId) || null,
                     syncedAt: attempt.updatedAt || null,
+                });
+            });
+
+            assignments.forEach((assignment) => {
+                if (!assignment.courseId || seenCourseIds.has(assignment.courseId)) return;
+                if (assignment.course?.id && !courseMap.has(assignment.course.id)) {
+                    courseMap.set(assignment.course.id, assignment.course);
+                }
+                const linkedScorm = scormAttempts.filter((scormAttempt) =>
+                    scormMatchesCourse(scormAttempt, assignment.courseId, null),
+                );
+                pushProgressRow({
+                    courseId: assignment.courseId,
+                    courseTitle: assignment.course?.title || null,
+                    status: 'NOT_STARTED',
+                    completionPercentage: 0,
+                    progressPercent: 0,
+                    score: courseQuizScore(null, linkedScorm),
+                    scoreRaw: null,
+                    passed: false,
+                    dueDate: assignment.dueDate || null,
+                    syncedAt: null,
                 });
             });
         });

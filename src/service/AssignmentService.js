@@ -1,3 +1,4 @@
+import { prisma } from '../utils/db.js';
 import { AssignmentModel } from '../models/AssignmentModel.js';
 import { CourseModel } from '../models/CourseModel.js';
 import { UserModel } from '../models/UserModel.js';
@@ -8,6 +9,20 @@ import { getAssignmentCompletionState } from '../lib/courseCompletion.js';
 import { resolveAssignmentCourseImage } from '../lib/courseImage.js';
 import { CourseService } from './CourseService.js';
 import { getCategoryCertificateStatusMap } from '../lib/categoryCertificateEligibility.js';
+
+function parseDueDate(value) {
+    if (value == null || value === '') {
+        throw new Error('Due date is required');
+    }
+    if (typeof value !== 'string' && !(value instanceof Date)) {
+        throw new Error('Invalid due date');
+    }
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+        throw new Error('Invalid due date');
+    }
+    return parsed;
+}
 
 export class AssignmentService {
     static async createAssignments(data, assigner) {
@@ -181,6 +196,63 @@ export class AssignmentService {
             courseTitle: course.title,
             count: assignees.length,
             assignees,
+        };
+    }
+
+    /**
+     * Change only the due date. Progress, scores, SCORM data, and certificates stay as they are.
+     */
+    static async updateAssignmentDueDate(assignmentId, dueDate, requester) {
+        if (!assignmentId) throw new Error('Assignment ID required');
+        const parsedDueDate = parseDueDate(dueDate);
+
+        if (requester.userRole !== 'HR_MANAGER' && requester.userRole !== 'SUPER_ADMIN') {
+            throw new Error('Only HR and super admin can update due dates');
+        }
+        if (requester.userRole === 'HR_MANAGER' && !requester.orgId) {
+            throw new Error('HR must be in an organization');
+        }
+
+        const assignment = await prisma.assignment.findUnique({
+            where: { id: assignmentId },
+            select: {
+                id: true,
+                courseId: true,
+                assigneeUserId: true,
+                assigneeUser: { select: { orgId: true } },
+            },
+        });
+        if (!assignment) throw new Error('Assignment not found');
+
+        if (requester.userRole === 'HR_MANAGER') {
+            if (!assignment.assigneeUser || assignment.assigneeUser.orgId !== requester.orgId) {
+                throw new Error('Not allowed to update this assignment');
+            }
+        }
+
+        const attemptWhere = {
+            OR: [
+                { assignmentId: assignment.id },
+                ...(assignment.assigneeUserId
+                    ? [{ userId: assignment.assigneeUserId, courseId: assignment.courseId }]
+                    : []),
+            ],
+        };
+
+        await prisma.$transaction(async (tx) => {
+            await tx.assignment.update({
+                where: { id: assignment.id },
+                data: { dueDate: parsedDueDate },
+            });
+            await tx.attempt.updateMany({
+                where: attemptWhere,
+                data: { dueDate: parsedDueDate },
+            });
+        });
+
+        return {
+            assignmentId: assignment.id,
+            dueDate: parsedDueDate.toISOString(),
         };
     }
 

@@ -18,6 +18,25 @@ export const getAssignedCourses = async (req, res) => {
     }
 };
 
+export const updateAssignmentDueDate = async (req, res) => {
+    try {
+        const result = await AssignmentService.updateAssignmentDueDate(
+            req.params.assignmentId,
+            req.body?.dueDate,
+            req.user,
+        );
+        return res.status(200).json(result);
+    } catch (error) {
+        const notFound = error.message === 'Assignment not found';
+        const forbidden =
+            error.message === 'Not allowed to update this assignment'
+            || error.message === 'Only HR and super admin can update due dates'
+            || error.message === 'HR must be in an organization';
+        const status = notFound ? 404 : forbidden ? 403 : 400;
+        return res.status(status).json({ error: error.message });
+    }
+};
+
 export const getCourseAssignees = async (req, res) => {
     try {
         const { courseId } = req.params;
